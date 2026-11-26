@@ -1,13 +1,14 @@
 // ============================================================================
-// EDUMIND AI - TEACHER DASHBOARD COMPONENT
-// Bàn làm việc giảng viên, thông báo bài nộp cần chấm & thống kê lớp học
+// EDUMIND AI - TEACHER DASHBOARD COMPONENT (LIVE POSTGRESQL DATA)
+// Bàn làm việc giảng viên, thông báo bài nộp cần chấm & thống kê lớp học từ PostgreSQL
 // ============================================================================
 
 "use client";
 
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { storageService } from "@/services/storageService";
+import { Course, Enrollment, QuizAttempt } from "@/types";
+import { apiClient } from "@/services/apiClient";
 import { Icon } from "@/components/ui/Icons";
 
 interface TeacherDashboardProps {
@@ -16,26 +17,32 @@ interface TeacherDashboardProps {
 
 export function TeacherDashboard({ onNavigate }: TeacherDashboardProps) {
   const { currentUser } = useAuth();
-  const [courses, setCourses] = useState(storageService.getCourses("teacher", currentUser.id));
-  const [pendingSubmissions, setPendingSubmissions] = useState<any[]>([]);
-  const [totalStudents, setTotalStudents] = useState(0);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [pendingSubmissions, setPendingSubmissions] = useState<QuizAttempt[]>([]);
+  const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
 
   useEffect(() => {
-    const myCourses = storageService.getCourses("teacher", currentUser.id);
-    setCourses(myCourses);
-
-    // Tìm các bài nộp cần chấm tự luận
-    const allAttempts = storageService.getAttempts();
-    const pending = allAttempts.filter(
-      (a) => a.status === "submitted" && myCourses.some((c) => c.id === a.courseId)
-    );
-    setPendingSubmissions(pending);
-
-    // Tính tổng số học viên ghi danh
-    const enrollments = storageService.getEnrollments();
-    const myEnr = enrollments.filter((e) => myCourses.some((c) => c.id === e.courseId));
-    setTotalStudents(myEnr.length);
+    let mounted = true;
+    Promise.all([
+      apiClient.getCourses().catch(() => []),
+      apiClient.getAttempts().catch(() => []),
+      apiClient.getEnrollments().catch(() => []),
+    ]).then(([myCourses, allAttempts, myEnr]) => {
+      if (!mounted) return;
+      setCourses(myCourses);
+      setPendingSubmissions(allAttempts.filter((a) => a.status === "submitted"));
+      setEnrollments(myEnr.filter((e) => e.status === "active"));
+    });
+    return () => {
+      mounted = false;
+    };
   }, [currentUser.id]);
+
+  const totalStudents = enrollments.length;
+  const averageCompletion =
+    enrollments.length > 0
+      ? Math.round(enrollments.reduce((sum, e) => sum + (Number(e.progressPercent) || 0), 0) / enrollments.length)
+      : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
@@ -43,7 +50,7 @@ export function TeacherDashboard({ onNavigate }: TeacherDashboardProps) {
       <div className="welcome-row">
         <div>
           <span className="welcome-kicker">KHÔNG GIAN GIẢNG VIÊN</span>
-          <h1>Chào Thầy {currentUser.name} 🎓</h1>
+          <h1>Chào {currentUser.name} 🎓</h1>
           <p>Quản lý giáo án, ngân hàng đề thi và theo dõi sát sao tiến độ học tập của từng sinh viên.</p>
         </div>
         <div style={{ display: "flex", gap: "10px" }}>
@@ -107,7 +114,7 @@ export function TeacherDashboard({ onNavigate }: TeacherDashboardProps) {
           </div>
           <div className="stat-content">
             <span className="stat-label">Tỷ lệ hoàn thành</span>
-            <strong className="stat-value">76%</strong>
+            <strong className="stat-value">{averageCompletion}%</strong>
             <span className="stat-detail">Tiến độ chung các lớp</span>
           </div>
         </div>
@@ -171,56 +178,62 @@ export function TeacherDashboard({ onNavigate }: TeacherDashboardProps) {
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "14px" }}>
-          {courses.map((course) => (
-            <div
-              key={course.id}
-              style={{
-                padding: "14px",
-                borderRadius: "10px",
-                border: "1px solid #e2e8f0",
-                background: "#f8fafc",
-                display: "flex",
-                flexDirection: "column",
-                gap: "8px",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "9px", fontWeight: 800, color: "#6366f1" }}>{course.subjectName}</span>
-                <span
-                  style={{
-                    padding: "2px 6px",
-                    borderRadius: "4px",
-                    fontSize: "8.5px",
-                    fontWeight: 700,
-                    background: course.status === "published" ? "#ecfdf5" : "#fffbeb",
-                    color: course.status === "published" ? "#065f46" : "#b45309",
-                  }}
-                >
-                  {course.status.toUpperCase()}
-                </span>
-              </div>
-              <h3 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>{course.title}</h3>
-              <p style={{ margin: 0, fontSize: "11px", color: "#64748b", lineHeight: "1.4" }}>
-                {course.description.substring(0, 75)}...
-              </p>
+        {courses.length === 0 ? (
+          <div style={{ padding: "36px 20px", textAlign: "center", color: "#94a3b8", fontSize: "12.5px" }}>
+            Bạn chưa tạo khóa học nào. Hãy bấm <strong>&quot;+ Soạn khóa học mới&quot;</strong> để tạo khóa học đầu tiên.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "14px" }}>
+            {courses.map((course) => (
               <div
+                key={course.id}
                 style={{
-                  marginTop: "auto",
-                  paddingTop: "8px",
-                  borderTop: "1px solid #edf2f7",
+                  padding: "14px",
+                  borderRadius: "10px",
+                  border: "1px solid #e2e8f0",
+                  background: "#f8fafc",
                   display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: "10.5px",
-                  color: "#94a3b8",
+                  flexDirection: "column",
+                  gap: "8px",
                 }}
               >
-                <span>{course.lessonCount} Bài học</span>
-                <span>{course.enrolledCount} Học viên</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: "9px", fontWeight: 800, color: "#6366f1" }}>{course.subjectName}</span>
+                  <span
+                    style={{
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      fontSize: "8.5px",
+                      fontWeight: 700,
+                      background: course.status === "published" ? "#ecfdf5" : "#fffbeb",
+                      color: course.status === "published" ? "#065f46" : "#b45309",
+                    }}
+                  >
+                    {course.status.toUpperCase()}
+                  </span>
+                </div>
+                <h3 style={{ margin: 0, fontSize: "13px", fontWeight: 700, color: "#1e293b" }}>{course.title}</h3>
+                <p style={{ margin: 0, fontSize: "11px", color: "#64748b", lineHeight: "1.4" }}>
+                  {course.description ? `${course.description.substring(0, 75)}${course.description.length > 75 ? "..." : ""}` : "Chưa có mô tả."}
+                </p>
+                <div
+                  style={{
+                    marginTop: "auto",
+                    paddingTop: "8px",
+                    borderTop: "1px solid #edf2f7",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: "10.5px",
+                    color: "#94a3b8",
+                  }}
+                >
+                  <span>{course.lessonCount} Bài học</span>
+                  <span>{course.enrolledCount} Học viên</span>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

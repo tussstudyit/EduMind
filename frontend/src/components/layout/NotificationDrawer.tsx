@@ -10,42 +10,82 @@ import { useAuth } from "@/context/AuthContext";
 import { storageService } from "@/services/storageService";
 import { Notification } from "@/types";
 import { Icon } from "@/components/ui/Icons";
+import { apiClient } from "@/services/apiClient";
+import { useToast } from "@/context/ToastContext";
 
 interface NotificationDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigate?: (view: string) => void;
+  onUnreadCountChange?: (count: number) => void;
 }
 
-export function NotificationDrawer({ isOpen, onClose, onNavigate }: NotificationDrawerProps) {
-  const { currentUser } = useAuth();
+export function NotificationDrawer({ isOpen, onClose, onNavigate, onUnreadCountChange }: NotificationDrawerProps) {
+  const { currentUser, isAuthenticated } = useAuth();
+  const { error } = useToast();
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [serverNotificationIds, setServerNotificationIds] = useState<Set<string>>(new Set());
 
-  const loadNotifications = () => {
+  const loadNotifications = async (showError = false) => {
     const list = storageService.getNotifications(currentUser.id);
-    setNotifications(list);
+    if (!isAuthenticated) {
+      setServerNotificationIds(new Set());
+      setNotifications(list);
+      onUnreadCountChange?.(list.filter((notification) => !notification.isRead).length);
+      return;
+    }
+
+    try {
+      const serverList = await apiClient.getNotifications();
+      const merged = new Map(list.map((notification) => [notification.id, notification]));
+      serverList.forEach((notification) => merged.set(notification.id, notification));
+      const result = [...merged.values()].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+      setServerNotificationIds(new Set(serverList.map((notification) => notification.id)));
+      setNotifications(result);
+      onUnreadCountChange?.(result.filter((notification) => !notification.isRead).length);
+    } catch (cause) {
+      setServerNotificationIds(new Set());
+      setNotifications(list);
+      onUnreadCountChange?.(list.filter((notification) => !notification.isRead).length);
+      if (showError) error("Không cập nhật được thông báo", cause instanceof Error ? cause.message : "Vui lòng thử lại.");
+    }
   };
 
   useEffect(() => {
     if (isOpen) {
-      loadNotifications();
+      void loadNotifications();
     }
-  }, [isOpen, currentUser.id]);
+  }, [isOpen, currentUser.id, isAuthenticated]);
 
-  const handleMarkAsRead = (id: string) => {
-    storageService.markNotificationRead(id);
-    loadNotifications();
+  const handleMarkAsRead = async (id: string) => {
+    try {
+      if (serverNotificationIds.has(id)) await apiClient.markNotificationRead(id);
+      storageService.markNotificationRead(id);
+      await loadNotifications(true);
+    } catch (cause) {
+      error("Không đánh dấu được thông báo", cause instanceof Error ? cause.message : "Vui lòng thử lại.");
+    }
   };
 
-  const handleMarkAllAsRead = () => {
-    storageService.markAllNotificationsRead(currentUser.id);
-    loadNotifications();
+  const handleMarkAllAsRead = async () => {
+    try {
+      if (isAuthenticated) await apiClient.markAllNotificationsRead();
+      storageService.markAllNotificationsRead(currentUser.id);
+      await loadNotifications(true);
+    } catch (cause) {
+      error("Không cập nhật được thông báo", cause instanceof Error ? cause.message : "Vui lòng thử lại.");
+    }
   };
 
-  const handleDelete = (id: string, e?: React.MouseEvent) => {
+  const handleDelete = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    storageService.deleteNotification(id);
-    loadNotifications();
+    try {
+      if (serverNotificationIds.has(id)) await apiClient.deleteNotification(id);
+      storageService.deleteNotification(id);
+      await loadNotifications(true);
+    } catch (cause) {
+      error("Không xóa được thông báo", cause instanceof Error ? cause.message : "Vui lòng thử lại.");
+    }
   };
 
   if (!isOpen) return null;
@@ -65,10 +105,10 @@ export function NotificationDrawer({ isOpen, onClose, onNavigate }: Notification
       <div
         style={{
           position: "absolute",
-          top: "72px",
-          right: "40px",
-          width: "380px",
-          maxHeight: "520px",
+          top: "max(64px, calc(58px + env(safe-area-inset-top)))",
+          right: "min(20px, 3vw)",
+          width: "min(380px, calc(100vw - 24px))",
+          maxHeight: "min(520px, calc(100dvh - 145px))",
           borderRadius: "12px",
           background: "#ffffff",
           border: "1px solid #e2e8f0",
@@ -162,7 +202,7 @@ export function NotificationDrawer({ isOpen, onClose, onNavigate }: Notification
                 }}
               >
                 <div style={{ marginTop: "2px" }}>
-                  {item.type === "success" && <span style={{ color: "#10b981" }}><Icon name="checkCircle" size={16} /></span>}
+                  {item.type === "success" && <span style={{ color: "#06b6d4" }}><Icon name="checkCircle" size={16} /></span>}
                   {item.type === "warning" && <span style={{ color: "#f59e0b" }}><Icon name="alertCircle" size={16} /></span>}
                   {item.type === "alert" && <span style={{ color: "#ef4444" }}><Icon name="alertCircle" size={16} /></span>}
                   {item.type === "info" && <span style={{ color: "#6366f1" }}><Icon name="sparkles" size={16} /></span>}
@@ -178,6 +218,14 @@ export function NotificationDrawer({ isOpen, onClose, onNavigate }: Notification
                     {item.message}
                   </p>
                   <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+                    {item.link === "admin_users" && onNavigate && (
+                      <button
+                        onClick={() => { onNavigate("admin_users"); onClose(); }}
+                        style={{ background: "none", border: "none", color: "#4f46e5", fontSize: "10px", fontWeight: 600, cursor: "pointer", padding: 0 }}
+                      >
+                        Xem yêu cầu
+                      </button>
+                    )}
                     {!item.isRead && (
                       <button
                         onClick={() => handleMarkAsRead(item.id)}

@@ -1,6 +1,6 @@
 // ============================================================================
 // EDUMIND AI - UNIVERSAL TOPBAR COMPONENT
-// Thanh điều hướng trên cùng tích hợp Role badge, Tìm kiếm, Hồ sơ & Đăng nhập
+// Thanh điều hướng trên cùng dành riêng cho FE Desktop.
 // ============================================================================
 
 "use client";
@@ -11,6 +11,7 @@ import { storageService } from "@/services/storageService";
 import { Icon } from "@/components/ui/Icons";
 import { NotificationDrawer } from "./NotificationDrawer";
 import { AuthModal } from "@/components/auth/AuthModal";
+import { apiClient } from "@/services/apiClient";
 
 interface TopbarProps {
   onSearch?: (query: string) => void;
@@ -18,25 +19,54 @@ interface TopbarProps {
 }
 
 export function Topbar({ onSearch, onNavigate }: TopbarProps) {
-  const { currentUser, role } = useAuth();
+  const { currentUser, role, isAuthenticated, signOut } = useAuth();
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
-    const list = storageService.getNotifications(currentUser.id);
-    setUnreadCount(list.filter((n) => !n.isRead).length);
-  }, [currentUser.id, isNotifOpen]);
+    let isMounted = true;
+    const local = storageService.getNotifications(currentUser.id);
+    if (!isAuthenticated) {
+      setUnreadCount(local.filter((notification) => !notification.isRead).length);
+      return () => {
+        isMounted = false;
+      };
+    }
 
-  const roleLabel =
-    role === "admin" ? "Quản trị viên" : role === "teacher" ? "Giảng viên" : "Học viên";
+    apiClient
+      .getNotifications()
+      .then((serverNotifications) => {
+        if (!isMounted) return;
+        const merged = new Map(local.map((notification) => [notification.id, notification]));
+        serverNotifications.forEach((notification) => merged.set(notification.id, notification));
+        setUnreadCount([...merged.values()].filter((notification) => !notification.isRead).length);
+      })
+      .catch(() => {
+        if (isMounted) setUnreadCount(local.filter((notification) => !notification.isRead).length);
+      });
 
-  const roleColor =
-    role === "admin"
-      ? { bg: "#fee2e2", text: "#b91c1c", border: "#fca5a5" }
-      : role === "teacher"
-      ? { bg: "#dbeafe", text: "#1d4ed8", border: "#93c5fd" }
-      : { bg: "#d1fae5", text: "#047857", border: "#6ee7b7" };
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUser.id, isNotifOpen, isAuthenticated]);
+
+  const roleLabel = !isAuthenticated
+    ? "Chưa đăng nhập"
+    : role === "admin"
+    ? "Quản trị viên"
+    : role === "teacher"
+    ? "Giảng viên"
+    : "Học viên";
+
+  const roleColor = !isAuthenticated
+    ? { bg: "#f1f5f9", text: "#64748b", border: "#cbd5e1" }
+    : role === "admin"
+    ? { bg: "#fee2e2", text: "#b91c1c", border: "#fca5a5" }
+    : role === "teacher"
+    ? { bg: "#dbeafe", text: "#1d4ed8", border: "#93c5fd" }
+    : { bg: "#d1fae5", text: "#047857", border: "#6ee7b7" };
 
   return (
     <>
@@ -61,53 +91,142 @@ export function Topbar({ onSearch, onNavigate }: TopbarProps) {
 
         {/* Actions & Profile */}
         <div className="topbar-actions">
-          {/* Role Badge */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "4px 10px",
-              borderRadius: "20px",
-              background: roleColor.bg,
-              color: roleColor.text,
-              border: `1px solid ${roleColor.border}`,
-              fontSize: "11px",
-              fontWeight: 700,
-            }}
-          >
-            <span
+          <div style={{ position: "relative", order: 3 }}>
+            <button
+              className="topbar-profile"
+              type="button"
+              aria-label={isAuthenticated ? `Tài khoản của ${currentUser.name}` : "Đăng nhập"}
+              aria-haspopup="menu"
+              aria-expanded={isAccountMenuOpen}
+              aria-controls="topbar-account-menu"
+              onClick={() => setIsAccountMenuOpen((open) => !open)}
+              title={isAuthenticated ? "Mở tùy chọn tài khoản" : "Đăng nhập hoặc đăng ký"}
               style={{
-                width: "7px",
-                height: "7px",
-                borderRadius: "50%",
-                background: roleColor.text,
+                padding: "5px 8px",
+                border: `1px solid ${isAccountMenuOpen ? "#c7d2fe" : "transparent"}`,
+                borderRadius: "9px",
+                background: isAccountMenuOpen ? "#f8faff" : "transparent",
+                color: "#334155",
+                textAlign: "left",
+                cursor: "pointer",
               }}
-            />
-            {roleLabel}
+            >
+              <div
+                className="avatar"
+                style={{
+                  background:
+                    role === "admin"
+                      ? "linear-gradient(140deg, #fca5a5, #ef4444)"
+                      : role === "teacher"
+                      ? "linear-gradient(140deg, #93c5fd, #3b82f6)"
+                      : "linear-gradient(140deg, #ffdfc6, #f2b89e)",
+                  color: role === "student" ? "#7e4537" : "#ffffff",
+                }}
+              >
+                {isAuthenticated ? currentUser.avatar : "?"}
+              </div>
+              <div className="topbar-profile-copy">
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <strong>{isAuthenticated ? currentUser.name : "Đăng nhập"}</strong>
+                  {isAuthenticated && (
+                    <span
+                      style={{
+                        padding: "2px 6px",
+                        borderRadius: "999px",
+                        background: roleColor.bg,
+                        color: roleColor.text,
+                        fontSize: "9px",
+                        fontWeight: 700,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {roleLabel}
+                    </span>
+                  )}
+                </div>
+                <span>
+                  {isAuthenticated
+                    ? currentUser.institution || currentUser.department || currentUser.email
+                    : "Để truy cập tài khoản"}
+                </span>
+              </div>
+              <Icon name="chevron" size={13} />
+            </button>
+            {isAccountMenuOpen && (
+              <div
+                id="topbar-account-menu"
+                role="menu"
+                aria-label="Tùy chọn tài khoản"
+                style={{
+                  position: "absolute",
+                  zIndex: 40,
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  width: "236px",
+                  padding: "8px",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "10px",
+                  background: "#ffffff",
+                  boxShadow: "0 12px 32px rgba(15, 23, 42, .14)",
+                }}
+              >
+                <div style={{ padding: "8px 10px 10px", borderBottom: "1px solid #f1f5f9", marginBottom: "6px" }}>
+                  {isAuthenticated ? (
+                    <>
+                      <strong style={{ display: "block", fontSize: "12px", color: "#1e293b", marginBottom: "2px" }}>
+                        {currentUser.name} ({roleLabel})
+                      </strong>
+                      <span style={{ display: "block", fontSize: "10px", color: "#64748b", overflowWrap: "anywhere" }}>
+                        {currentUser.email}
+                      </span>
+                    </>
+                  ) : (
+                    <strong style={{ display: "block", fontSize: "12px", color: "#1e293b" }}>
+                      Bạn chưa đăng nhập
+                    </strong>
+                  )}
+                </div>
+                {isAuthenticated && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsAccountMenuOpen(false);
+                      onNavigate?.("profile");
+                    }}
+                    style={accountMenuItemStyle}
+                  >
+                    Hồ sơ cá nhân
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAccountMenuOpen(false);
+                    setIsAuthOpen(true);
+                  }}
+                  style={accountMenuItemStyle}
+                >
+                  {isAuthenticated ? "Đổi tài khoản / đăng nhập khác" : "Đăng nhập hoặc đăng ký"}
+                </button>
+                {isAuthenticated && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      signOut();
+                      setIsAccountMenuOpen(false);
+                      setIsAuthOpen(true);
+                    }}
+                    style={accountMenuItemStyle}
+                  >
+                    Đăng xuất
+                  </button>
+                )}
+              </div>
+            )}
           </div>
-
-          {/* Quick Login / Switch Account Button */}
-          <button
-            onClick={() => setIsAuthOpen(true)}
-            style={{
-              padding: "5px 10px",
-              borderRadius: "6px",
-              border: "1px solid #e2e8f0",
-              background: "#ffffff",
-              color: "#475569",
-              fontSize: "11px",
-              fontWeight: 650,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
-            title="Đăng nhập / Đổi tài khoản khác"
-          >
-            <Icon name="user" size={13} />
-            <span>Tài khoản</span>
-          </button>
 
           {/* Notification Button with unread count */}
           <button
@@ -115,7 +234,7 @@ export function Topbar({ onSearch, onNavigate }: TopbarProps) {
             type="button"
             aria-label="Thông báo"
             onClick={() => setIsNotifOpen(!isNotifOpen)}
-            style={{ position: "relative" }}
+            style={{ position: "relative", order: 1 }}
           >
             <Icon name="bell" size={18} />
             {unreadCount > 0 && (
@@ -143,34 +262,7 @@ export function Topbar({ onSearch, onNavigate }: TopbarProps) {
             )}
           </button>
 
-          <div className="topbar-divider" />
-
-          {/* Profile User (Click to view Profile) */}
-          <div
-            className="topbar-profile"
-            onClick={() => onNavigate?.("profile")}
-            style={{ cursor: "pointer" }}
-            title="Xem & Sửa Hồ sơ cá nhân"
-          >
-            <div
-              className="avatar"
-              style={{
-                background:
-                  role === "admin"
-                    ? "linear-gradient(140deg, #fca5a5, #ef4444)"
-                    : role === "teacher"
-                    ? "linear-gradient(140deg, #93c5fd, #3b82f6)"
-                    : "linear-gradient(140deg, #ffdfc6, #f2b89e)",
-                color: role === "student" ? "#7e4537" : "#ffffff",
-              }}
-            >
-              {currentUser.avatar}
-            </div>
-            <div className="topbar-profile-copy">
-              <strong>{currentUser.name}</strong>
-              <span>{currentUser.department || roleLabel}</span>
-            </div>
-          </div>
+          <div className="topbar-divider" style={{ order: 2 }} />
         </div>
       </header>
 
@@ -179,13 +271,23 @@ export function Topbar({ onSearch, onNavigate }: TopbarProps) {
         isOpen={isNotifOpen}
         onClose={() => setIsNotifOpen(false)}
         onNavigate={onNavigate}
+        onUnreadCountChange={setUnreadCount}
       />
 
       {/* Auth Modal (Login / Register / Forgot Password) */}
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-      />
+      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} />
     </>
   );
 }
+
+const accountMenuItemStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "9px 10px",
+  border: 0,
+  borderRadius: "7px",
+  background: "transparent",
+  color: "#334155",
+  fontSize: "12px",
+  textAlign: "left",
+  cursor: "pointer",
+};

@@ -1,15 +1,16 @@
 // ============================================================================
 // EDUMIND AI - STUDENT RECOMMENDATIONS COMPONENT (MODULE 11)
-// Đề xuất học tập thông minh: Thẻ gợi ý bài học / khóa học, nút Xem ngay,
-// Đánh dấu đã xem & Bỏ qua
+// Đề xuất học tập cá nhân hóa tự động: Phân tích tiến độ khóa học, điểm số
+// bài kiểm tra, lịch sử hỏi đáp AI Tutor & Quét OCR để tự sinh gợi ý mới.
 // ============================================================================
 
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { Recommendation } from "@/types";
 import { storageService } from "@/services/storageService";
+import { apiClient } from "@/services/apiClient";
 import { useToast } from "@/context/ToastContext";
 import { Icon } from "@/components/ui/Icons";
 
@@ -24,45 +25,88 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
 
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [filterTab, setFilterTab] = useState<"all" | "unread" | "read">("all");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [activeModel, setActiveModel] = useState("gemini-3.8-flash");
 
-  const loadRecommendations = () => {
-    const list = storageService.getRecommendations(currentUser.id);
-    setRecommendations(list);
-  };
-
-  useEffect(() => {
-    loadRecommendations();
+  const loadRecommendations = useCallback(async () => {
+    try {
+      const [remoteList, runtime] = await Promise.all([
+        apiClient.getRecommendations(false),
+        apiClient.getAiRuntimeStatus().catch(() => null),
+      ]);
+      if (runtime?.modelName) setActiveModel(runtime.modelName);
+      setRecommendations(remoteList);
+    } catch {
+      const cfg = storageService.getAIConfig();
+      setActiveModel(cfg.modelName || "gemini-3.8-flash");
+      const list = storageService.getRecommendations(currentUser.id);
+      setRecommendations(list);
+    }
   }, [currentUser.id]);
 
-  const handleMarkAsRead = (recId: string) => {
+  useEffect(() => {
+    void loadRecommendations();
+  }, [loadRecommendations]);
+
+  const handleMarkAsRead = async (recId: string) => {
     storageService.markRecommendationRead(recId);
+    try {
+      await apiClient.markRecommendationRead(recId);
+    } catch {
+      // Fallback handled by storageService
+    }
+    setRecommendations((prev) => prev.map((r) => (r.id === recId ? { ...r, isRead: true } : r)));
     success("Đã đánh dấu đã xem", "Gợi ý này đã được chuyển vào mục đã đọc.");
-    loadRecommendations();
   };
 
-  const handleDismiss = (recId: string) => {
+  const handleDismiss = async (recId: string) => {
     storageService.dismissRecommendation(recId);
+    try {
+      await apiClient.dismissRecommendation(recId);
+    } catch {
+      // Fallback handled by storageService
+    }
+    setRecommendations((prev) => prev.filter((r) => r.id !== recId));
     info("Đã bỏ qua gợi ý", "Đề xuất đã được ẩn khỏi danh sách của bạn.");
-    loadRecommendations();
   };
 
   const handleAction = (rec: Recommendation) => {
-    storageService.markRecommendationRead(rec.id);
+    void handleMarkAsRead(rec.id);
 
-    if (rec.type === "quiz") {
+    if (rec.type === "exercise") {
       onNavigate("student_quiz");
+    } else if (rec.courseId && onOpenCourse && rec.type === "review") {
+      onOpenCourse(rec.courseId);
     } else if (rec.type === "course") {
       onNavigate("student_courses");
+    } else if (rec.type === "tip") {
+      onNavigate("student_tutor");
     } else {
       onNavigate("student_learn");
     }
   };
 
-  const handleResetRecommendations = () => {
-    // Khôi phục gợi ý mẫu nếu người dùng đã bấm bỏ qua hết
-    localStorage.removeItem("edumind_recommendations");
-    loadRecommendations();
-    success("Đã đặt lại dữ liệu đề xuất AI!");
+  const handleGeneratePersonalized = async () => {
+    setIsGenerating(true);
+    try {
+      const generated = await apiClient.generateRecommendations();
+      setRecommendations(generated);
+      setFilterTab("all");
+      success(
+        "Đã phân tích & sinh lộ trình cá nhân hóa mới!",
+        `Engine AI (${activeModel}) đã tổng hợp tiến độ bài học, điểm bài thi và lịch sử AI Tutor của bạn.`,
+      );
+    } catch {
+      const generated = storageService.generatePersonalizedRecommendations(currentUser.id);
+      setRecommendations(generated);
+      setFilterTab("all");
+      success(
+        "Đã tự sinh đề xuất cá nhân hóa mới!",
+        `Đã phân tích tiến độ khóa học, lịch sử kiểm tra và hội thoại AI Tutor của bạn.`,
+      );
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const filtered = recommendations.filter((r) => {
@@ -76,18 +120,23 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
       {/* Header */}
       <div className="section-heading" style={{ margin: 0 }}>
         <div>
-          <span className="eyebrow">MODULE 11: ĐỀ XUẤT HỌC TẬP THÔNG MINH (AI RECOMMENDATIONS)</span>
+          <span className="eyebrow">MODULE 11: ĐỀ XUẤT HỌC TẬP THÔNG MINH (AI ADAPTIVE ENGINE)</span>
           <h2>Lộ trình & Gợi ý Bài học Cá nhân hóa</h2>
         </div>
-        {recommendations.length < 2 && (
-          <button
-            onClick={handleResetRecommendations}
-            className="quick-action"
-            style={{ cursor: "pointer", background: "#f8fafc" }}
-          >
-            <Icon name="refresh" size={13} /> Khôi phục gợi ý mẫu
-          </button>
-        )}
+        <button
+          onClick={() => void handleGeneratePersonalized()}
+          disabled={isGenerating}
+          className="quick-action"
+          style={{
+            cursor: isGenerating ? "wait" : "pointer",
+            background: "#4f46e5",
+            color: "#ffffff",
+            borderColor: "#4f46e5",
+          }}
+        >
+          <Icon name="sparkles" size={13} />{" "}
+          {isGenerating ? "AI đang phân tích hồ sơ..." : "Phân tích & Sinh gợi ý AI mới"}
+        </button>
       </div>
 
       {/* AI Engine Banner */}
@@ -120,10 +169,10 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
           </div>
           <div>
             <strong style={{ fontSize: "14px", color: "#1e293b", display: "block" }}>
-              EduMind Adaptive Learning Engine
+              EduMind Adaptive Learning Engine · Model: {activeModel}
             </strong>
             <p style={{ margin: "2px 0 0", fontSize: "12px", color: "#64748b" }}>
-              Thuật toán liên tục phân tích tiến độ, điểm số bài kiểm tra và lịch sử xem bài giảng để đề xuất nội dung tối ưu nhất cho bạn.
+              Thuật toán tự động tổng hợp tiến độ từng bài học, kết quả chấm điểm Quiz, lịch sử hỏi đáp AI Tutor và bản quét OCR để sinh đề xuất cá nhân hóa cho riêng bạn.
             </p>
           </div>
         </div>
@@ -138,7 +187,7 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
         ].map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setFilterTab(tab.id as any)}
+            onClick={() => setFilterTab(tab.id as typeof filterTab)}
             style={{
               padding: "6px 14px",
               borderRadius: "6px",
@@ -159,37 +208,85 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
       {filtered.length === 0 ? (
         <div
           style={{
-            padding: "50px 20px",
+            padding: "56px 24px",
             textAlign: "center",
-            background: "#ffffff",
-            borderRadius: "12px",
-            border: "1px solid #e2e8f0",
+            background: "linear-gradient(135deg, #fafafa 0%, #f5f3ff 100%)",
+            borderRadius: "16px",
+            border: "2px dashed #c7d2fe",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "16px",
           }}
         >
-          <div style={{ color: "#94a3b8", marginBottom: "10px" }}>
-            <Icon name="sparkles" size={32} />
-          </div>
-          <strong style={{ fontSize: "14px", color: "#1e293b", display: "block" }}>
-            Không có đề xuất nào trong mục này.
-          </strong>
-          <p style={{ fontSize: "12px", color: "#64748b", margin: "4px 0 16px" }}>
-            Bạn đã hoàn thành xem hoặc bỏ qua các gợi ý học tập trước đó.
-          </p>
-          <button
-            onClick={handleResetRecommendations}
+          <div
             style={{
-              padding: "8px 16px",
-              borderRadius: "8px",
-              background: "#4f46e5",
-              color: "#fff",
-              border: "none",
-              fontSize: "12px",
-              fontWeight: 700,
-              cursor: "pointer",
+              width: "64px",
+              height: "64px",
+              borderRadius: "16px",
+              background: "linear-gradient(135deg, #eef2ff, #e0e7ff)",
+              display: "grid",
+              placeItems: "center",
+              color: "#6366f1",
             }}
           >
-            Tạo lại gợi ý mới
-          </button>
+            <Icon name="sparkles" size={28} />
+          </div>
+          <div>
+            <strong style={{ fontSize: "15px", color: "#1e293b", display: "block" }}>
+              {filterTab === "unread"
+                ? "Bạn đã xem hết tất cả gợi ý!"
+                : filterTab === "read"
+                ? "Chưa có gợi ý nào được đánh dấu đã xem"
+                : "Không có đề xuất nào trong mục này"}
+            </strong>
+            <p style={{ fontSize: "12px", color: "#64748b", margin: "6px 0 0", maxWidth: "380px", lineHeight: "1.6" }}>
+              {filterTab === "unread"
+                ? "Tuyệt vời! Hãy bấm nút bên dưới để AI phân tích tiến độ mới nhất và tạo thêm gợi ý phù hợp với bạn."
+                : filterTab === "read"
+                ? 'Hãy tương tác với các gợi ý học tập, nhấn "Đã xem" để chúng xuất hiện ở đây.'
+                : "Bấm nút bên dưới để AI phân tích tiến độ khóa học, điểm thi và lịch sử học tập của bạn."}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center" }}>
+            <button
+              onClick={() => void handleGeneratePersonalized()}
+              disabled={isGenerating}
+              style={{
+                padding: "9px 20px",
+                borderRadius: "8px",
+                background: "#4f46e5",
+                color: "#fff",
+                border: "none",
+                fontSize: "12px",
+                fontWeight: 700,
+                cursor: isGenerating ? "wait" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              <Icon name="refresh" size={14} />{" "}
+              {isGenerating ? "Đang phân tích..." : "Tạo lại gợi ý mới"}
+            </button>
+            {filterTab !== "all" && (
+              <button
+                onClick={() => setFilterTab("all")}
+                style={{
+                  padding: "9px 20px",
+                  borderRadius: "8px",
+                  background: "#ffffff",
+                  color: "#4f46e5",
+                  border: "1.5px solid #c7d2fe",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Xem tất cả đề xuất
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "16px" }}>
@@ -210,7 +307,6 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
               }}
             >
               <div>
-                {/* Type and Status row */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                   <span
                     style={{
@@ -221,21 +317,27 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
                       background:
                         rec.type === "course"
                           ? "#ede9fe"
-                          : rec.type === "quiz"
+                          : rec.type === "exercise"
                           ? "#fef3c7"
+                          : rec.type === "tip"
+                          ? "#cffafe"
                           : "#ecfdf5",
                       color:
                         rec.type === "course"
                           ? "#6366f1"
-                          : rec.type === "quiz"
+                          : rec.type === "exercise"
                           ? "#b45309"
+                          : rec.type === "tip"
+                          ? "#0e7490"
                           : "#047857",
                     }}
                   >
                     {rec.type === "course"
                       ? "KHÓA HỌC BỔ TRỢ"
-                      : rec.type === "quiz"
+                      : rec.type === "exercise"
                       ? "BÀI TẬP ÔN LUYỆN"
+                      : rec.type === "tip"
+                      ? "GỢI Ý TỪ AI TUTOR / OCR"
                       : "BÀI GIẢNG TIẾP THEO"}
                   </span>
 
@@ -253,7 +355,6 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
                   </span>
                 </div>
 
-                {/* Reason tag */}
                 <div style={{ fontSize: "10.5px", color: "#6366f1", fontWeight: 700, marginBottom: "6px" }}>
                   ✦ {rec.reason || "Dựa trên tiến độ và kết quả làm bài của bạn"}
                 </div>
@@ -267,7 +368,6 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
                 </p>
               </div>
 
-              {/* 3 Explicit Action Buttons: Xem ngay, Đánh dấu đã xem, Bỏ qua */}
               <div
                 style={{
                   display: "flex",
@@ -300,7 +400,7 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
                 <div style={{ display: "flex", gap: "6px" }}>
                   {!rec.isRead && (
                     <button
-                      onClick={() => handleMarkAsRead(rec.id)}
+                      onClick={() => void handleMarkAsRead(rec.id)}
                       title="Đánh dấu đã xem gợi ý này"
                       style={{
                         padding: "6px 10px",
@@ -321,7 +421,7 @@ export function RecommendationView({ onNavigate, onOpenCourse }: RecommendationV
                   )}
 
                   <button
-                    onClick={() => handleDismiss(rec.id)}
+                    onClick={() => void handleDismiss(rec.id)}
                     title="Bỏ qua gợi ý này"
                     style={{
                       padding: "6px 10px",

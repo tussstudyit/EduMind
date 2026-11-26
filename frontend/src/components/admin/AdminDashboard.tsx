@@ -1,52 +1,79 @@
 // ============================================================================
-// EDUMIND AI - ADMIN DASHBOARD COMPONENT (MODULE 13)
-// Báo cáo tổng quan, số lượng học viên, khóa học, lượt làm bài, lượt dùng AI/OCR & biểu đồ
+// EDUMIND AI - ADMIN DASHBOARD COMPONENT (MODULE 13 - LIVE POSTGRESQL DATA)
+// Báo cáo tổng quan thời gian thực từ PostgreSQL: học viên, khóa học, lượt thi, AI/OCR & Audit Log
 // ============================================================================
 
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { storageService } from "@/services/storageService";
+import { AIConfig, SystemLog } from "@/types";
+import { apiClient, AdminReportSummary } from "@/services/apiClient";
+import { initialAIConfig } from "@/mock/initialData";
 import { Icon } from "@/components/ui/Icons";
 
 interface AdminDashboardProps {
   onNavigate: (viewId: string) => void;
 }
 
+const emptySummary: AdminReportSummary = {
+  users: 0,
+  teachers: 0,
+  students: 0,
+  courses: 0,
+  publishedCourses: 0,
+  activeEnrollments: 0,
+  quizzes: 0,
+  attempts: 0,
+  submittedAttempts: 0,
+  ocrScans: 0,
+  aiTutorReplies: 0,
+  recommendationsCount: 0,
+  passRatePercent: 0,
+  weeklyExamActivity: [
+    { day: "T2", attempts: 0, rate: 0 },
+    { day: "T3", attempts: 0, rate: 0 },
+    { day: "T4", attempts: 0, rate: 0 },
+    { day: "T5", attempts: 0, rate: 0 },
+    { day: "T6", attempts: 0, rate: 0 },
+    { day: "T7", attempts: 0, rate: 0 },
+    { day: "CN", attempts: 0, rate: 0 },
+  ],
+};
+
 export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
-  const [studentsCount, setStudentsCount] = useState(0);
-  const [coursesCount, setCoursesCount] = useState(0);
-  const [attemptsCount, setAttemptsCount] = useState(0);
-  const [aiOcrCount, setAiOcrCount] = useState(0);
-  const [aiConfig, setAiConfig] = useState(storageService.getAIConfig());
-  const [logs, setLogs] = useState(storageService.getSystemLogs());
+  const [summary, setSummary] = useState<AdminReportSummary>(emptySummary);
+  const [aiConfig, setAiConfig] = useState<AIConfig>(initialAIConfig);
+  const [logs, setLogs] = useState<SystemLog[]>([]);
 
   useEffect(() => {
-    const users = storageService.getUsers();
-    setStudentsCount(users.filter((u) => u.role === "student").length);
-    setCoursesCount(storageService.getCourses("admin").length);
-    setAttemptsCount(storageService.getAttempts().length);
-
-    // Tính toán lượt dùng AI & OCR
-    const scansCount = storageService.getOCRScans("student-01").length;
-    setAiOcrCount(scansCount + 48); // Tổng lượt tương tác AI Tutor & OCR
-
-    setAiConfig(storageService.getAIConfig());
-    setLogs(storageService.getSystemLogs().slice(0, 5));
+    let mounted = true;
+    Promise.all([
+      apiClient.getAdminReportSummary().catch(() => emptySummary),
+      apiClient.getAiConfig().catch(() => initialAIConfig),
+      apiClient.getSystemLogs(5).catch(() => []),
+    ]).then(([report, cfg, recentLogs]) => {
+      if (!mounted) return;
+      setSummary(report);
+      setAiConfig(cfg);
+      setLogs(recentLogs.slice(0, 5));
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
-  // Dữ liệu biểu đồ 7 ngày gần nhất (Thứ 2 -> Chủ nhật)
-  const weeklyExamActivity = [
-    { day: "Thứ 2", attempts: 18, rate: 85 },
-    { day: "Thứ 3", attempts: 24, rate: 92 },
-    { day: "Thứ 4", attempts: 32, rate: 88 },
-    { day: "Thứ 5", attempts: 45, rate: 95 },
-    { day: "Thứ 6", attempts: 38, rate: 90 },
-    { day: "Thứ 7", attempts: 52, rate: 96 },
-    { day: "Chủ nhật", attempts: 41, rate: 91 },
-  ];
+  const weeklyExamActivity = summary.weeklyExamActivity?.length
+    ? summary.weeklyExamActivity
+    : emptySummary.weeklyExamActivity;
+  const maxAttempts = Math.max(...weeklyExamActivity.map((d) => d.attempts), 1);
+  const weeklyTotalAttempts = weeklyExamActivity.reduce((sum, d) => sum + d.attempts, 0);
 
-  const maxAttempts = Math.max(...weeklyExamActivity.map((d) => d.attempts));
+  const totalAiInteractions =
+    (summary.aiTutorReplies || 0) + (summary.ocrScans || 0) + (summary.recommendationsCount || 0);
+  const denom = Math.max(totalAiInteractions, 1);
+  const tutorPct = totalAiInteractions > 0 ? Math.round(((summary.aiTutorReplies || 0) / denom) * 100) : 0;
+  const ocrPct = totalAiInteractions > 0 ? Math.round(((summary.ocrScans || 0) / denom) * 100) : 0;
+  const recPct = totalAiInteractions > 0 ? Math.max(0, 100 - tutorPct - ocrPct) : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
@@ -83,8 +110,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </div>
           <div className="stat-content">
             <span className="stat-label">Số lượng học viên</span>
-            <strong className="stat-value">{studentsCount}</strong>
-            <span className="stat-detail">Tài khoản sinh viên chính thức</span>
+            <strong className="stat-value">{summary.students}</strong>
+            <span className="stat-detail">
+              Tổng hệ thống: {summary.users} tài khoản ({summary.teachers} giảng viên)
+            </span>
           </div>
         </div>
 
@@ -94,8 +123,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </div>
           <div className="stat-content">
             <span className="stat-label">Số lượng khóa học</span>
-            <strong className="stat-value">{coursesCount}</strong>
-            <span className="stat-detail">Toàn hệ thống trường học</span>
+            <strong className="stat-value">{summary.courses}</strong>
+            <span className="stat-detail">
+              {summary.publishedCourses} đã xuất bản · {summary.activeEnrollments} lượt ghi danh
+            </span>
           </div>
         </div>
 
@@ -105,8 +136,10 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </div>
           <div className="stat-content">
             <span className="stat-label">Lượt làm bài kiểm tra</span>
-            <strong className="stat-value">{attemptsCount}</strong>
-            <span className="stat-detail">Đã nộp & đang chấm điểm</span>
+            <strong className="stat-value">{summary.attempts}</strong>
+            <span className="stat-detail">
+              {summary.submittedAttempts} đã nộp · {summary.quizzes} đề kiểm tra
+            </span>
           </div>
         </div>
 
@@ -116,7 +149,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </div>
           <div className="stat-content">
             <span className="stat-label">Lượt dùng AI & Quét OCR</span>
-            <strong className="stat-value">{aiOcrCount}</strong>
+            <strong className="stat-value">{totalAiInteractions}</strong>
             <span className="stat-detail">{aiConfig.provider.toUpperCase()} Vision + Chatbot</span>
           </div>
         </div>
@@ -131,7 +164,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
               <span className="eyebrow">BIỂU ĐỒ HOẠT ĐỘNG KIỂM TRA</span>
               <h2>Lượt nộp bài đánh giá trong 7 ngày qua</h2>
             </div>
-            <span style={{ fontSize: "11px", color: "#64748b" }}>Cập nhật hôm nay</span>
+            <span style={{ fontSize: "11px", color: "#64748b" }}>Dữ liệu trực tiếp từ hệ thống</span>
           </div>
 
           {/* Bar Chart Visualization */}
@@ -147,7 +180,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
             }}
           >
             {weeklyExamActivity.map((item, idx) => {
-              const heightPercent = Math.round((item.attempts / maxAttempts) * 100);
+              const heightPercent = item.attempts > 0 ? Math.max(12, Math.round((item.attempts / maxAttempts) * 100)) : 4;
               return (
                 <div
                   key={idx}
@@ -169,7 +202,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                       width: "100%",
                       maxWidth: "34px",
                       height: `${heightPercent}%`,
-                      background: idx === 5 ? "#4f46e5" : "linear-gradient(180deg, #818cf8 0%, #c7d2fe 100%)",
+                      background: idx === weeklyExamActivity.length - 1 ? "#4f46e5" : "linear-gradient(180deg, #818cf8 0%, #c7d2fe 100%)",
                       borderRadius: "6px 6px 0 0",
                       transition: "height 0.4s ease",
                     }}
@@ -184,8 +217,8 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11.5px", color: "#64748b" }}>
-            <span>✦ Tổng lượt thi tuần này: <strong>257 lượt</strong></span>
-            <span>✦ Tỉ lệ đạt chuẩn trung bình: <strong style={{ color: "#10b981" }}>91.4%</strong></span>
+            <span>✦ Tổng lượt thi 7 ngày qua: <strong>{weeklyTotalAttempts} lượt</strong></span>
+            <span>✦ Tỉ lệ đạt chuẩn trung bình: <strong style={{ color: "#06b6d4" }}>{summary.passRatePercent}%</strong></span>
           </div>
         </div>
 
@@ -200,13 +233,13 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
               style={{
                 padding: "2px 8px",
                 borderRadius: "10px",
-                background: "#ecfdf5",
-                color: "#065f46",
+                background: "#cffafe",
+                color: "#0e7490",
                 fontSize: "10px",
                 fontWeight: 700,
               }}
             >
-              ● 99.98% Uptime
+              ● {aiConfig.serviceStatus === "healthy" ? "Sẵn sàng" : aiConfig.serviceStatus.toUpperCase()}
             </span>
           </div>
 
@@ -214,31 +247,31 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "4px" }}>
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "4px" }}>
-                <span style={{ color: "#1e293b", fontWeight: 600 }}>1. AI Tutor Q&A Chatbot (Gemini Flash)</span>
-                <strong style={{ color: "#4f46e5" }}>62% (1,519 tokens)</strong>
+                <span style={{ color: "#1e293b", fontWeight: 600 }}>1. AI Tutor Q&A Chatbot ({aiConfig.modelName})</span>
+                <strong style={{ color: "#4f46e5" }}>{tutorPct}% ({summary.aiTutorReplies || 0} phản hồi)</strong>
               </div>
               <div style={{ height: "6px", background: "#f1f5f9", borderRadius: "10px", overflow: "hidden" }}>
-                <div style={{ width: "62%", height: "100%", background: "#4f46e5", borderRadius: "10px" }} />
+                <div style={{ width: `${tutorPct}%`, height: "100%", background: "#4f46e5", borderRadius: "10px" }} />
               </div>
             </div>
 
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "4px" }}>
-                <span style={{ color: "#1e293b", fontWeight: 600 }}>2. OCR Vision Worker (Scan tài liệu)</span>
-                <strong style={{ color: "#059669" }}>26% (637 tokens)</strong>
+                <span style={{ color: "#1e293b", fontWeight: 600 }}>2. OCR Vision Worker ({aiConfig.ocrEngine})</span>
+                <strong style={{ color: "#06b6d4" }}>{ocrPct}% ({summary.ocrScans || 0} bản quét)</strong>
               </div>
               <div style={{ height: "6px", background: "#f1f5f9", borderRadius: "10px", overflow: "hidden" }}>
-                <div style={{ width: "26%", height: "100%", background: "#10b981", borderRadius: "10px" }} />
+                <div style={{ width: `${ocrPct}%`, height: "100%", background: "#06b6d4", borderRadius: "10px" }} />
               </div>
             </div>
 
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "4px" }}>
                 <span style={{ color: "#1e293b", fontWeight: 600 }}>3. Adaptive Recommendations Engine</span>
-                <strong style={{ color: "#d97706" }}>12% (294 tokens)</strong>
+                <strong style={{ color: "#d97706" }}>{recPct}% ({summary.recommendationsCount || 0} đề xuất)</strong>
               </div>
               <div style={{ height: "6px", background: "#f1f5f9", borderRadius: "10px", overflow: "hidden" }}>
-                <div style={{ width: "12%", height: "100%", background: "#f59e0b", borderRadius: "10px" }} />
+                <div style={{ width: `${recPct}%`, height: "100%", background: "#f59e0b", borderRadius: "10px" }} />
               </div>
             </div>
           </div>
@@ -256,7 +289,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
               marginTop: "auto",
             }}
           >
-            <span>Độ trễ trung bình: <strong>185ms</strong></span>
+            <span>Model: <strong>{aiConfig.modelName}</strong></span>
             <span>Giới hạn ngày: <strong>{aiConfig.dailyUsageCount} / {aiConfig.dailyUsageLimit}</strong></span>
           </div>
         </div>
@@ -305,7 +338,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 transition: "all 0.15s ease",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#059669" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#06b6d4" }}>
                 <Icon name="book" size={18} />
                 <strong style={{ fontSize: "13px" }}>Môn học & Chủ đề</strong>
               </div>
@@ -345,7 +378,7 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 transition: "all 0.15s ease",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#6366f1" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#8b5cf6" }}>
                 <Icon name="settings" size={18} />
                 <strong style={{ fontSize: "13px" }}>Cấu hình AI & Nhật ký</strong>
               </div>
@@ -373,28 +406,34 @@ export function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {logs.map((log) => (
-              <div
-                key={log.id}
-                style={{
-                  padding: "8px 12px",
-                  borderRadius: "6px",
-                  background: "#f8fafc",
-                  border: "1px solid #e2e8f0",
-                  fontSize: "11px",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <strong style={{ color: "#1e293b" }}>{log.action}</strong>
-                  <span style={{ fontSize: "9px", color: "#94a3b8" }}>
-                    {new Date(log.timestamp).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
-                  </span>
-                </div>
-                <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
-                  {log.details}
-                </div>
+            {logs.length === 0 ? (
+              <div style={{ padding: "24px", textAlign: "center", color: "#94a3b8", fontSize: "12px" }}>
+                Chưa có nhật ký hệ thống nào được ghi nhận.
               </div>
-            ))}
+            ) : (
+              logs.map((log) => (
+                <div
+                  key={log.id}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: "6px",
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    fontSize: "11px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <strong style={{ color: "#1e293b" }}>{log.action}</strong>
+                    <span style={{ fontSize: "9px", color: "#94a3b8" }}>
+                      {new Date(log.timestamp).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>
+                    {log.details}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

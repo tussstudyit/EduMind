@@ -30,26 +30,30 @@ import { StudentProgressView } from "@/components/teacher/StudentProgressView";
 // Student Views
 import { StudentDashboard } from "@/components/student/StudentDashboard";
 import { CourseCatalog } from "@/components/student/CourseCatalog";
+import { LibraryView } from "@/components/student/LibraryView";
 import { LearningRoom } from "@/components/student/LearningRoom";
 import { QuizTaking } from "@/components/student/QuizTaking";
 import { AITutorView } from "@/components/student/AITutorView";
 import { OCRScannerView } from "@/components/student/OCRScannerView";
 import { RecommendationView } from "@/components/student/RecommendationView";
+import { AIChatWidget } from "@/components/student/AIChatWidget";
 
 export default function Home() {
   const { role } = useAuth();
-  const [activeView, setActiveView] = useState<string>("student_dashboard");
+  const [activeView, setActiveView] = useState<string>("student_courses");
   const [selectedCourseId, setSelectedCourseId] = useState<string>("course-01");
   const [tutorPrompt, setTutorPrompt] = useState<string>("");
+  const [tutorCourseId, setTutorCourseId] = useState<string | undefined>(undefined);
+  const [tutorConversationId, setTutorConversationId] = useState<string | undefined>(undefined);
 
-  // Tự động chuyển view tương ứng khi đổi Role
+  // Tự động chuyển view tương ứng khi đổi Role (SV vào thẳng trang Tìm kiếm & Gợi ý kiểu Studocu)
   useEffect(() => {
     if (role === "admin") {
       setActiveView("admin_dashboard");
     } else if (role === "teacher") {
       setActiveView("teacher_dashboard");
     } else {
-      setActiveView("student_dashboard");
+      setActiveView("student_courses");
     }
   }, [role]);
 
@@ -89,38 +93,49 @@ export default function Home() {
           return <GradingCenter />;
         case "teacher_progress":
           return <StudentProgressView />;
+        case "teacher_ocr":
+          return (
+            <OCRScannerView
+              onOpenAITutor={() => {
+                setActiveView("teacher_quizzes");
+              }}
+            />
+          );
         default:
           return <TeacherDashboard onNavigate={setActiveView} />;
       }
     }
 
-    // Role: Student
+    // Role: Student (Trang chủ mặc định là Tìm kiếm & Gợi ý kiểu Studocu - CourseCatalog)
     switch (activeView) {
-      case "student_dashboard":
-        return (
-          <StudentDashboard
-            onNavigate={setActiveView}
-            onOpenCourse={(cId) => {
-              setSelectedCourseId(cId);
-              setActiveView("student_learn");
-            }}
-          />
-        );
       case "student_courses":
+      case "student_dashboard":
         return (
           <CourseCatalog
             onLearnCourse={(cId) => {
               setSelectedCourseId(cId);
               setActiveView("student_learn");
             }}
+            onOpenView={(viewId) => setActiveView(viewId)}
+            onAskAITutor={(prompt) => {
+              setTutorPrompt(prompt);
+              setTutorCourseId(undefined);
+              setTutorConversationId(undefined);
+              setActiveView("student_tutor");
+            }}
           />
         );
+      case "student_library":
+        return <LibraryView onBrowseClasses={() => setActiveView("student_courses")} />;
       case "student_learn":
         return (
           <LearningRoom
             initialCourseId={selectedCourseId}
-            onAskAITutor={(prompt) => {
+            onBrowseClasses={() => setActiveView("student_courses")}
+            onAskAITutor={(prompt, courseId) => {
               setTutorPrompt(prompt);
+              setTutorCourseId(courseId);
+              setTutorConversationId(undefined);
               setActiveView("student_tutor");
             }}
           />
@@ -128,12 +143,25 @@ export default function Home() {
       case "student_quiz":
         return <QuizTaking />;
       case "student_tutor":
-        return <AITutorView initialPrompt={tutorPrompt} />;
+        return (
+          <AITutorView
+            initialPrompt={tutorPrompt}
+            initialCourseId={tutorCourseId}
+            initialConversationId={tutorConversationId}
+            onInitialPromptConsumed={() => {
+              setTutorPrompt("");
+              setTutorCourseId(undefined);
+            }}
+            onInitialConversationConsumed={() => setTutorConversationId(undefined)}
+          />
+        );
       case "student_ocr":
         return (
           <OCRScannerView
-            onOpenAITutor={(prompt?: string) => {
-              if (prompt) setTutorPrompt(prompt);
+            onOpenAITutor={(conversationId) => {
+              setTutorPrompt("");
+              setTutorCourseId(undefined);
+              setTutorConversationId(conversationId);
               setActiveView("student_tutor");
             }}
           />
@@ -150,11 +178,17 @@ export default function Home() {
         );
       default:
         return (
-          <StudentDashboard
-            onNavigate={setActiveView}
-            onOpenCourse={(cId) => {
+          <CourseCatalog
+            onLearnCourse={(cId) => {
               setSelectedCourseId(cId);
               setActiveView("student_learn");
+            }}
+            onOpenView={(viewId) => setActiveView(viewId)}
+            onAskAITutor={(prompt) => {
+              setTutorPrompt(prompt);
+              setTutorCourseId(undefined);
+              setTutorConversationId(undefined);
+              setActiveView("student_tutor");
             }}
           />
         );
@@ -163,20 +197,22 @@ export default function Home() {
 
   return (
     <div className="app-shell" id="top">
-      {/* Sidebar điều hướng theo vai trò */}
-      <Sidebar activeView={activeView} onSelectView={setActiveView} />
+      {/* Sidebar điều hướng riêng của FE Desktop */}
+      <Sidebar
+        activeView={activeView}
+        onSelectView={setActiveView}
+      />
 
       {/* Vùng hiển thị nội dung chính */}
       <div className="app-main">
-        <Topbar onNavigate={setActiveView} />
+        <Topbar
+          onNavigate={setActiveView}
+        />
         <main className="dashboard-content">
           {renderActiveView()}
-          <footer className="dashboard-footer" style={{ marginTop: "40px" }}>
-            <span>© 2026 EduMind AI LMS · Hệ thống Đào tạo & Quản lý Học tập Thông minh</span>
-            <span>Chế độ: Frontend Mock Layer (Sẵn sàng tích hợp API)</span>
-          </footer>
         </main>
       </div>
+      {activeView !== "student_tutor" && <AIChatWidget />}
     </div>
   );
 }

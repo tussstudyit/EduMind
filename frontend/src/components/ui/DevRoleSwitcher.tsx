@@ -27,7 +27,7 @@ export function DevRoleSwitcher() {
           ? "Quản trị viên (Nguyễn Quản Trị)"
           : newRole === "teacher"
           ? "Giảng viên (ThS. Nguyễn Hoàng Nam)"
-          : "Học viên (Trần Minh Anh)"
+          : "Học viên (Lê Quốc Bảo)"
       }`
     );
   };
@@ -50,7 +50,7 @@ export function DevRoleSwitcher() {
           position: "fixed",
           bottom: "20px",
           right: "20px",
-          zIndex: 9999,
+          zIndex: 85,
           display: "flex",
           alignItems: "center",
           gap: "8px",
@@ -88,7 +88,7 @@ export function DevRoleSwitcher() {
         position: "fixed",
         bottom: "20px",
         right: "20px",
-        zIndex: 9999,
+        zIndex: 85,
         display: "flex",
         flexDirection: "column",
         gap: "8px",
@@ -100,6 +100,7 @@ export function DevRoleSwitcher() {
         boxShadow: "0 20px 35px -10px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05)",
         fontFamily: "system-ui, -apple-system, sans-serif",
         minWidth: "280px",
+        maxWidth: "320px",
       }}
     >
       {/* Header */}
@@ -185,7 +186,7 @@ export function DevRoleSwitcher() {
           {currentUser.avatar}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: "11px", fontWeight: 700, color: "#f1f5f9", truncate: "ellipsis" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {currentUser.name}
           </div>
           <div style={{ fontSize: "9px", color: "#94a3b8" }}>{currentUser.email}</div>

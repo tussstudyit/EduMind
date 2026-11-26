@@ -85,7 +85,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             }}
           >
             <div style={{ marginTop: "2px", flexShrink: 0 }}>
-              {t.type === "success" && <span style={{ color: "#10b981" }}><Icon name="checkCircle" size={18} /></span>}
+              {t.type === "success" && <span style={{ color: "#06b6d4" }}><Icon name="checkCircle" size={18} /></span>}
               {t.type === "error" && <span style={{ color: "#ef4444" }}><Icon name="alertCircle" size={18} /></span>}
               {t.type === "warning" && <span style={{ color: "#f59e0b" }}><Icon name="alertCircle" size={18} /></span>}
               {t.type === "info" && <span style={{ color: "#6366f1" }}><Icon name="sparkles" size={18} /></span>}

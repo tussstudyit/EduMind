@@ -1,0 +1,46 @@
+export function BrandMark() {
+  return (
+    <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="edumind-book" x1="5" y1="41" x2="43" y2="20" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#4F46E5" />
+          <stop offset=".55" stopColor="#8B5CF6" />
+          <stop offset="1" stopColor="#06B6D4" />
+        </linearGradient>
+        <linearGradient id="edumind-neural" x1="12" y1="31" x2="36" y2="19" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#8B5CF6" />
+          <stop offset="1" stopColor="#06B6D4" />
+        </linearGradient>
+        <linearGradient id="edumind-cap" x1="8" y1="5" x2="40" y2="16" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#4F46E5" />
+          <stop offset=".55" stopColor="#8B5CF6" />
+          <stop offset="1" stopColor="#06B6D4" />
+        </linearGradient>
+      </defs>
+
+      <path d="M5.5 21.7c5.8-2.6 12.3-2.4 18.5.9v17.8c0 1.1-1.1 1.8-2.1 1.4L7.7 37c-1.3-.5-2.2-1.8-2.2-3.2V21.7Z" fill="#F8FAFC" stroke="url(#edumind-book)" strokeWidth="2.1" strokeLinejoin="round" />
+      <path d="M42.5 21.7c-5.8-2.6-12.3-2.4-18.5.9v17.8c0 1.1 1.1 1.8 2.1 1.4L40.3 37c1.3-.5 2.2-1.8 2.2-3.2V21.7Z" fill="#F8FAFC" stroke="url(#edumind-book)" strokeWidth="2.1" strokeLinejoin="round" />
+      <path d="M8.5 25.4c4.1-1.3 8.4-.9 12.6 1M8.5 30c4.1-1.1 8.4-.6 12.6 1.4M39.5 25.4c-4.1-1.3-8.4-.9-12.6 1M39.5 30c-4.1-1.1-8.4-.6-12.6 1.4" stroke="url(#edumind-book)" strokeWidth="1.25" strokeLinecap="round" opacity=".7" />
+
+      <g stroke="url(#edumind-neural)" strokeWidth="1.25" opacity=".94">
+        <path d="m13.2 21.2 5.7 5.2 2.8-7.1 5.7 4.1 5.8-5.3M13.2 21.2l2.7 8.1 8.6-2.9 5.8 5.6 2.9-13.9M18.9 26.4l5.6 8 5.8-2.4M21.7 19.3l2.8 7.1 8.7-8.3M15.9 29.3l8.6-2.9" />
+      </g>
+      <g fill="#fff" stroke="url(#edumind-neural)" strokeWidth="1.4">
+        <circle cx="13.2" cy="21.2" r="2.1" />
+        <circle cx="18.9" cy="26.4" r="2.1" />
+        <circle cx="21.7" cy="19.3" r="2.1" />
+        <circle cx="24.5" cy="26.4" r="2.3" />
+        <circle cx="27.4" cy="23.4" r="1.8" />
+        <circle cx="33.2" cy="18.1" r="2.1" />
+        <circle cx="31.1" cy="32.5" r="2.1" />
+        <circle cx="15.9" cy="29.3" r="1.7" />
+        <circle cx="24.5" cy="34.4" r="1.8" />
+      </g>
+
+      <path d="m7 10.5 17-6 17 6-17 6-17-6Z" fill="url(#edumind-cap)" stroke="#fff" strokeOpacity=".75" strokeWidth=".8" strokeLinejoin="round" />
+      <path d="M14 13v4.4c5.7 4.2 14.3 4.2 20 0V13" fill="#0F172A" fillOpacity=".92" />
+      <path d="M41 11v7.3" stroke="#06B6D4" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="41" cy="19.4" r="1.6" fill="#06B6D4" />
+    </svg>
+  );
+}

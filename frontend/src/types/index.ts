@@ -17,8 +17,9 @@ export interface User {
   role: UserRole;
   status: UserStatus;
   phone?: string;
+  institution?: string;
   bio?: string;
-  department?: string; // Ví dụ: "Khoa CNTT"
+  department?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,13 +70,36 @@ export interface Course {
   durationHours: number;
   lessonCount: number;
   enrolledCount: number;
+  averageRating?: number;
+  reviewCount?: number;
+  pendingReportCount?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CourseReport {
+  id: string;
+  courseId: string;
+  courseTitle: string;
+  teacherId: string;
+  teacherName: string;
+  reporterId: string;
+  reporterName: string;
+  reporterEmail: string;
+  reason: string;
+  details: string;
+  status: "pending" | "temporarily_locked" | "permanently_locked" | "dismissed";
+  adminActionNote: string;
+  n8nSynced: boolean;
+  createdAt: string;
+  resolvedAt?: string | null;
 }
 
 // ----------------------------------------------------------------------------
 // MODULE 4: BÀI HỌC VÀ TÀI LIỆU (Lessons & Materials)
 // ----------------------------------------------------------------------------
+export type LessonStatus = "published" | "draft" | "hidden";
+
 export interface Lesson {
   id: string;
   courseId: string;
@@ -86,9 +110,10 @@ export interface Lesson {
   videoUrl?: string;
   contentMarkdown: string;
   isPublished: boolean;
+  status?: LessonStatus;
 }
 
-export type MaterialType = "pdf" | "docx" | "slide" | "code" | "zip";
+export type MaterialType = "pdf" | "docx" | "slide" | "code" | "zip" | "video";
 
 export interface Material {
   id: string;
@@ -100,6 +125,29 @@ export interface Material {
   fileUrl: string;
   fileSize: string;
   uploadedAt: string;
+}
+
+export interface TeacherReview {
+  id: string;
+  teacherId: string;
+  teacherName?: string;
+  courseId: string;
+  courseTitle?: string;
+  studentId: string;
+  studentName: string;
+  studentAvatar?: string;
+  rating: number;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeacherReviewSummary {
+  averageRating: number;
+  totalReviews: number;
+  starCounts: Record<number, number>;
+  badge: string;
+  n8nAggregated?: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -118,6 +166,7 @@ export interface Enrollment {
   enrolledAt: string;
   status: EnrollmentStatus;
   progressPercent: number;
+  completedLessonIds?: string[];
   lastAccessedAt: string;
 }
 
@@ -130,6 +179,11 @@ export interface QuestionOption {
   id: string;
   text: string;
   isCorrect?: boolean; // LƯU Ý: Chỉ hiển thị cho Teacher & Admin, bị ẩn ở phía Student
+  attachmentName?: string;
+  attachmentType?: string;
+  attachmentSize?: string;
+  attachmentDataUrl?: string;
+  attachmentExtractedText?: string;
 }
 
 export interface Question {
@@ -144,7 +198,7 @@ export interface Question {
 
 export interface Quiz {
   id: string;
-  courseId: string;
+  courseId: string | null;
   courseTitle: string;
   lessonId?: string;
   title: string;
@@ -168,13 +222,20 @@ export interface StudentAnswer {
   essayAnswer?: string;
   scoreAwarded?: number;
   teacherFeedback?: string;
+  isCorrect?: boolean;
+  correctOptionId?: string;
+  attachmentName?: string;
+  attachmentType?: string;
+  attachmentSize?: string;
+  attachmentDataUrl?: string;
+  attachmentExtractedText?: string;
 }
 
 export interface QuizAttempt {
   id: string;
   quizId: string;
   quizTitle: string;
-  courseId: string;
+  courseId: string | null;
   studentId: string;
   studentName: string;
   studentAvatar: string;
@@ -259,6 +320,7 @@ export interface Recommendation {
   studentId: string;
   title: string;
   description: string;
+  reason?: string;
   type: RecommendationType;
   courseId?: string;
   isRead: boolean;
@@ -279,7 +341,7 @@ export interface Notification {
   type: NotificationType;
   isRead: boolean;
   createdAt: string;
-  link?: string;
+  link?: string | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -298,10 +360,17 @@ export interface SystemLog {
   details: string;
 }
 
+export type AIProviderType = "gemini" | "openai" | "anthropic" | "ollama" | "edumind-tuned";
+
 export interface AIConfig {
-  provider: "gemini" | "openai";
+  id?: string;
+  provider: AIProviderType;
   modelName: string;
+  apiKey?: string;
   apiKeyMasked: string;
+  customEndpoint?: string;
+  systemPrompt?: string;
+  activeModelVersionId?: string | null;
   maxTokens: number;
   temperature: number;
   ocrEngine: "gemini-multimodal" | "google-vision" | "tesseract";
@@ -310,5 +379,106 @@ export interface AIConfig {
   serviceStatus: "healthy" | "degraded" | "offline";
   dailyUsageCount: number;
   dailyUsageLimit: number;
+  updatedAt: string;
+}
+
+export interface AIConputTestResult {
+  ok: boolean;
+  provider: string;
+  modelName: string;
+  latencyMs: number;
+  sampleReply: string;
+}
+
+export interface AiCorpusDocument {
+  id: string;
+  uploaderId: string;
+  uploaderName: string;
+  uploaderRole: UserRole;
+  title: string;
+  description: string;
+  subject: string;
+  category: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  extractedText: string;
+  chunkCount: number;
+  status: "pending_review" | "approved" | "rejected" | "indexed";
+  reviewedBy?: string | null;
+  reviewNotes?: string | null;
+  includedInTraining: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiDatasetEntry {
+  id: string;
+  sourceType: "document" | "tutor_chat" | "ocr_scan" | "quiz" | "manual";
+  sourceId?: string | null;
+  subject: string;
+  prompt: string;
+  expectedResponse: string;
+  systemPrompt?: string;
+  tags: string[];
+  qualityScore: number;
+  status: "draft" | "labeled" | "validated" | "archived";
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiTrainingJob {
+  id: string;
+  name: string;
+  baseModel: string;
+  targetModelName: string;
+  datasetCount: number;
+  hyperparameters: {
+    epochs: number;
+    learningRate: number;
+    batchSize: number;
+    loraRank: number;
+  };
+  status: "queued" | "preparing_data" | "training" | "evaluating" | "completed" | "failed" | "cancelled";
+  progressPercent: number;
+  currentEpoch: number;
+  totalEpochs: number;
+  trainingLoss?: number | null;
+  validationLoss?: number | null;
+  logs: {
+    timestamp: string;
+    step: string;
+    message: string;
+    loss?: number;
+    valLoss?: number;
+  }[];
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiModelVersion {
+  id: string;
+  jobId?: string | null;
+  versionTag: string;
+  modelIdentifier: string;
+  baseModel: string;
+  datasetSize: number;
+  metrics: {
+    accuracy: number;
+    f1Score: number;
+    bleuScore: number;
+    perplexity: number;
+    avgLatencyMs: number;
+    hallucinationRate: number;
+  };
+  evaluationSummary: string;
+  status: "candidate" | "active" | "archived" | "rollback";
+  isDeployed: boolean;
+  deployedAt?: string | null;
+  deployedBy?: string | null;
+  createdAt: string;
   updatedAt: string;
 }

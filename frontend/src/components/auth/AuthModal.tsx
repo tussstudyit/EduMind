@@ -8,10 +8,13 @@
 import React, { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import { storageService } from "@/services/storageService";
 import { UserRole } from "@/types";
+import { apiClient } from "@/services/apiClient";
 import { Icon } from "@/components/ui/Icons";
 import { Modal } from "@/components/ui/Modal";
+import { PasswordInput } from "@/components/ui/PasswordInput";
+
+type SelfRegisterRole = Exclude<UserRole, "admin">;
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -20,7 +23,7 @@ interface AuthModalProps {
 }
 
 export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalProps) {
-  const { switchUser, switchRole } = useAuth();
+  const { switchRole, establishSession } = useAuth();
   const { success, error, info } = useToast();
 
   const [tab, setTab] = useState<"login" | "register" | "forgot">(defaultTab);
@@ -32,19 +35,41 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
   // Register form
   const [regName, setRegName] = useState("");
   const [regEmail, setRegEmail] = useState("");
-  const [regRole, setRegRole] = useState<UserRole>("student");
+  const [regRole, setRegRole] = useState<SelfRegisterRole | "">("");
   const [regPhone, setRegPhone] = useState("");
-  const [regDept, setRegDept] = useState("");
+  const [regInstitution, setRegInstitution] = useState("");
   const [regPass, setRegPass] = useState("");
   const [regConfirmPass, setRegConfirmPass] = useState("");
+  const [isRegPassFocused, setIsRegPassFocused] = useState(false);
+  const [isRegistering, setIsRegistering] = useState(false);
 
   // Forgot password form
   const [forgotEmail, setForgotEmail] = useState("");
-  const [forgotStep, setForgotStep] = useState<"email" | "reset">("email");
-  const [newPass, setNewPass] = useState("");
+
+  const passwordChecks = [
+    { label: "Ít nhất 8 ký tự", passed: regPass.length >= 8 },
+    { label: "Có chữ hoa và chữ thường", passed: /\p{Lu}/u.test(regPass) && /\p{Ll}/u.test(regPass) },
+    { label: "Có chữ số", passed: /\p{N}/u.test(regPass) },
+    { label: "Có ký tự đặc biệt", passed: /[^\p{L}\p{N}]/u.test(regPass) },
+  ];
+  const passwordStrength = passwordChecks.filter((check) => check.passed).length;
+  const passwordStrengthLabel = !regPass
+    ? "Chưa nhập mật khẩu"
+    : regPass.length < 8 || passwordStrength < 2
+    ? "Yếu"
+    : passwordStrength === passwordChecks.length
+    ? "Mạnh"
+    : "Trung bình";
+  const passwordStrengthColor = passwordStrengthLabel === "Mạnh"
+    ? "#059669"
+    : passwordStrengthLabel === "Trung bình"
+    ? "#d97706"
+    : "#dc2626";
+  const showPasswordStrength = isRegPassFocused || Boolean(regPass);
 
   // Quick switch credentials
   const handleQuickLogin = (role: UserRole) => {
+    if (process.env.NODE_ENV !== "development") return;
     switchRole(role);
     success(
       "Đăng nhập thành công!",
@@ -53,30 +78,30 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
     onClose();
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!loginEmail.trim()) {
       error("Lỗi", "Vui lòng nhập email.");
       return;
     }
-    const res = storageService.login(loginEmail, loginPass);
-    if (res.success && res.user) {
-      switchUser(res.user.id);
-      success("Đăng nhập thành công!", `Chào mừng ${res.user.name} trở lại EduMind AI.`);
+    try {
+      const session = await apiClient.login(loginEmail.trim(), loginPass);
+      establishSession(session.user, session.accessToken);
+      success("Đăng nhập thành công!", `Chào mừng ${session.user.name} trở lại EduMind AI.`);
       onClose();
-    } else {
-      error("Đăng nhập thất bại", res.message);
+    } catch (err) {
+      error("Đăng nhập thất bại", err instanceof Error ? err.message : "Không thể đăng nhập.");
     }
   };
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!regName.trim() || !regEmail.trim()) {
-      error("Lỗi", "Vui lòng điền họ tên và email hợp lệ.");
+    if (!regName.trim() || !regEmail.trim() || !regRole) {
+      error("Thiếu thông tin", "Vui lòng nhập họ tên, email hợp lệ và chọn vai trò.");
       return;
     }
-    if (regPass.length < 6) {
-      error("Mật khẩu yếu", "Mật khẩu phải có từ 6 ký tự trở lên.");
+    if (regPass.length < 8) {
+      error("Mật khẩu yếu", "Mật khẩu phải có từ 8 ký tự trở lên.");
       return;
     }
     if (regPass !== regConfirmPass) {
@@ -84,36 +109,36 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
       return;
     }
 
-    const res = storageService.register(regName, regEmail, regRole, regPhone, regDept);
-    if (res.success && res.user) {
-      switchUser(res.user.id);
+    setIsRegistering(true);
+    try {
+      const session = await apiClient.register({
+        name: regName.trim(),
+        email: regEmail.trim(),
+        role: regRole,
+        password: regPass,
+        phone: regPhone.trim(),
+        institution: regInstitution.trim(),
+      });
+      establishSession(session.user, session.accessToken);
       success("Đăng ký thành công!", `Chào mừng bạn gia nhập EduMind AI.`);
       onClose();
-    } else {
-      error("Đăng ký thất bại", res.message);
+    } catch (err) {
+      error("Đăng ký thất bại", err instanceof Error ? err.message : "Không thể tạo tài khoản.");
+    } finally {
+      setIsRegistering(false);
     }
   };
 
-  const handleForgotSubmit = (e: React.FormEvent) => {
+  const handleForgotSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (forgotStep === "email") {
-      if (!forgotEmail.trim()) return;
-      const users = storageService.getUsers();
-      const u = users.find((item) => item.email.toLowerCase() === forgotEmail.trim().toLowerCase());
-      if (!u) {
-        error("Không tìm thấy", "Email này không tồn tại trong hệ thống.");
-        return;
-      }
-      setForgotStep("reset");
-      info("Mã xác thực đã gửi", "Đã gửi mã OTP khôi phục đến email. Nhập mật khẩu mới bên dưới.");
-    } else {
-      if (newPass.length < 6) {
-        error("Mật khẩu yếu", "Mật khẩu phải có từ 6 ký tự.");
-        return;
-      }
-      success("Khôi phục mật khẩu thành công!", "Bạn có thể đăng nhập bằng mật khẩu mới.");
+    if (!forgotEmail.trim()) return;
+    try {
+      const result = await apiClient.requestPasswordReset(forgotEmail.trim());
+      info("Đã tiếp nhận yêu cầu", result.message);
       setTab("login");
-      setForgotStep("email");
+      setLoginEmail(forgotEmail.trim());
+    } catch (err) {
+      error("Không gửi được yêu cầu", err instanceof Error ? err.message : "Vui lòng thử lại sau.");
     }
   };
 
@@ -128,11 +153,11 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
           ? "Tạo Tài Khoản Mới"
           : "Khôi Phục Mật Khẩu"
       }
-      subtitle="Hệ thống Quản lý Học tập & Hỗ trợ Trí tuệ Nhân tạo LMS"
+      subtitle="Nền tảng quản lý học tập và hỗ trợ bằng trí tuệ nhân tạo"
       maxWidth="480px"
     >
-      {/* Tabs Switcher */}
-      <div
+      {/* Only login and registration are exposed as tabs. Password recovery starts from the login link. */}
+      {tab !== "forgot" && <div
         style={{
           display: "flex",
           borderBottom: "1px solid #e2e8f0",
@@ -171,23 +196,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
         >
           Đăng ký
         </button>
-        <button
-          onClick={() => setTab("forgot")}
-          style={{
-            flex: 1,
-            padding: "10px 0",
-            border: "none",
-            borderBottom: tab === "forgot" ? "2px solid #4f46e5" : "2px solid transparent",
-            background: "none",
-            fontSize: "12.5px",
-            fontWeight: tab === "forgot" ? 700 : 500,
-            color: tab === "forgot" ? "#4f46e5" : "#64748b",
-            cursor: "pointer",
-          }}
-        >
-          Quên MK
-        </button>
-      </div>
+      </div>}
 
       {/* LOGIN TAB */}
       {tab === "login" && (
@@ -199,7 +208,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
             <input
               type="email"
               required
-              placeholder="Vd: minhanh.tran@student.edumind.edu.vn"
+              placeholder="nguyenvana@gmail.com"
               value={loginEmail}
               onChange={(e) => setLoginEmail(e.target.value)}
               style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
@@ -213,14 +222,13 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
               </label>
               <button
                 type="button"
-                onClick={() => setTab("forgot")}
+                onClick={() => { setForgotEmail(loginEmail); setTab("forgot"); }}
                 style={{ background: "none", border: "none", color: "#4f46e5", fontSize: "10.5px", cursor: "pointer", padding: 0 }}
               >
                 Quên mật khẩu?
               </button>
             </div>
-            <input
-              type="password"
+            <PasswordInput
               required
               placeholder="••••••••"
               value={loginPass}
@@ -247,7 +255,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
           </button>
 
           {/* Quick Login Test Accounts */}
-          <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}>
+          {process.env.NODE_ENV === "development" && <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px dashed #e2e8f0" }}>
             <span style={{ fontSize: "10px", fontWeight: 700, color: "#94a3b8", display: "block", marginBottom: "6px" }}>
               ⚡ ĐĂNG NHẬP NHANH VỚI TÀI KHOẢN MẪU:
             </span>
@@ -301,166 +309,213 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
                 👑 Quản trị
               </button>
             </div>
-          </div>
+          </div>}
         </form>
       )}
 
       {/* REGISTER TAB */}
       {tab === "register" && (
-        <form onSubmit={handleRegisterSubmit} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <form onSubmit={handleRegisterSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div>
-            <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
+            <label htmlFor="register-name" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
               Họ và tên *
             </label>
             <input
+              id="register-name"
               type="text"
               required
-              placeholder="Vd: Lê Tuấn Anh"
+              minLength={2}
+              maxLength={160}
+              autoComplete="name"
+              placeholder="VD: Nguyễn Minh Anh"
               value={regName}
               onChange={(e) => setRegName(e.target.value)}
-              style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
             />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
-                Email đăng ký *
+              <label htmlFor="register-email" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+                Email đăng nhập *
               </label>
               <input
+                id="register-email"
                 type="email"
                 required
-                placeholder="email@edumind.edu.vn"
+                maxLength={255}
+                autoComplete="email"
+                placeholder="nguyenvana@gmail.com"
                 value={regEmail}
                 onChange={(e) => setRegEmail(e.target.value)}
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
               />
+              <span style={{ display: "block", marginTop: "4px", color: "#64748b", fontSize: "10px", lineHeight: 1.4 }}>
+                Dùng email bạn còn truy cập được.
+              </span>
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
-                Vai trò
+              <label htmlFor="register-role" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+                Vai trò *
               </label>
               <select
+                id="register-role"
+                required
                 value={regRole}
-                onChange={(e) => setRegRole(e.target.value as UserRole)}
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px", background: "#fff" }}
+                onChange={(e) => setRegRole(e.target.value as SelfRegisterRole | "")}
+                style={{ width: "100%", padding: "8px 10px", borderRadius: "8px", border: "1px solid #cbd5e1", background: "#fff", color: regRole ? "#1e293b" : "#64748b", fontSize: "12px" }}
               >
-                <option value="student">Học viên (Student)</option>
-                <option value="teacher">Giảng viên (Teacher)</option>
+                <option value="" disabled>Chọn vai trò</option>
+                <option value="student">Sinh viên</option>
+                <option value="teacher">Giảng viên</option>
               </select>
+              <span style={{ display: "block", marginTop: "4px", color: "#64748b", fontSize: "10px", lineHeight: 1.4 }}>
+                {regRole === "teacher"
+                  ? "Dành cho người dạy và quản lý khóa học."
+                  : regRole === "student"
+                  ? "Dành cho người học và theo dõi tiến độ."
+                  : "Chọn vai trò phù hợp với bạn."}
+              </span>
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
+              <label htmlFor="register-phone" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
                 Số điện thoại
               </label>
               <input
-                type="text"
-                placeholder="09..."
+                id="register-phone"
+                type="tel"
+                maxLength={32}
+                autoComplete="tel"
+                placeholder="VD: 0912 345 678"
                 value={regPhone}
                 onChange={(e) => setRegPhone(e.target.value)}
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
               />
+              <span style={{ display: "block", marginTop: "4px", color: "#64748b", fontSize: "10px" }}>
+                Không bắt buộc.
+              </span>
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
-                Khoa / Bộ môn
+              <label htmlFor="register-institution" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+                Trường
               </label>
               <input
+                id="register-institution"
                 type="text"
-                placeholder="Khoa CNTT..."
-                value={regDept}
-                onChange={(e) => setRegDept(e.target.value)}
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+                maxLength={160}
+                autoComplete="organization"
+                placeholder="VD: Trường Đại học Bách khoa Hà Nội"
+                value={regInstitution}
+                onChange={(e) => setRegInstitution(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
               />
+              <span style={{ display: "block", marginTop: "4px", color: "#64748b", fontSize: "10px", lineHeight: 1.4 }}>
+                Nhập tên trường bạn đang học hoặc công tác.
+              </span>
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
-                Mật khẩu (≥ 6 ký tự) *
+              <label htmlFor="register-password" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+                Mật khẩu *
               </label>
-              <input
-                type="password"
+              <PasswordInput
+                id="register-password"
                 required
-                placeholder="••••••••"
+                minLength={8}
+                maxLength={128}
+                autoComplete="new-password"
+                aria-describedby={showPasswordStrength ? "register-password-help register-password-strength" : "register-password-help"}
+                placeholder="Tạo mật khẩu"
                 value={regPass}
                 onChange={(e) => setRegPass(e.target.value)}
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+                onFocus={() => setIsRegPassFocused(true)}
+                onBlur={() => setIsRegPassFocused(false)}
+                style={{ width: "100%", minWidth: 0, padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "8px", outline: "none", fontSize: "12px" }}
               />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "3px" }}>
+              <label htmlFor="register-confirm-password" style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
                 Xác nhận mật khẩu *
               </label>
-              <input
-                type="password"
+              <PasswordInput
+                id="register-confirm-password"
                 required
-                placeholder="••••••••"
+                minLength={8}
+                maxLength={128}
+                autoComplete="new-password"
+                placeholder="Nhập lại mật khẩu"
                 value={regConfirmPass}
                 onChange={(e) => setRegConfirmPass(e.target.value)}
-                style={{ width: "100%", padding: "7px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+                style={{ width: "100%", minWidth: 0, padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "8px", outline: "none", fontSize: "12px" }}
               />
+              {regConfirmPass && (
+                <span style={{ display: "block", marginTop: "4px", color: regPass === regConfirmPass ? "#059669" : "#dc2626", fontSize: "10px" }}>
+                  {regPass === regConfirmPass ? "Mật khẩu trùng khớp." : "Mật khẩu chưa trùng khớp."}
+                </span>
+              )}
             </div>
+          </div>
+
+          <div id="register-password-help" style={{ color: "#64748b", fontSize: "10px", lineHeight: 1.45 }}>
+            Dùng ít nhất 8 ký tự; kết hợp chữ hoa, chữ thường, chữ số và ký tự đặc biệt để tăng độ an toàn.
+            {showPasswordStrength && (
+              <div id="register-password-strength" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px" }}>
+                <div aria-hidden="true" style={{ display: "flex", flex: 1, gap: "4px" }}>
+                  {passwordChecks.map((check, index) => (
+                    <span key={check.label} style={{ height: "4px", flex: 1, borderRadius: "999px", background: index < passwordStrength ? passwordStrengthColor : "#e2e8f0" }} />
+                  ))}
+                </div>
+                <strong style={{ color: regPass ? passwordStrengthColor : "#64748b", fontSize: "10px", whiteSpace: "nowrap" }}>
+                  Độ mạnh: {passwordStrengthLabel}
+                </strong>
+              </div>
+            )}
           </div>
 
           <button
             type="submit"
+            disabled={isRegistering}
             style={{
-              marginTop: "8px",
+              marginTop: "2px",
               padding: "10px",
               borderRadius: "8px",
-              background: "#4f46e5",
+              background: isRegistering ? "#818cf8" : "#4f46e5",
               color: "#fff",
               border: "none",
               fontWeight: 700,
-              fontSize: "12px",
-              cursor: "pointer",
+              fontSize: "12.5px",
+              cursor: isRegistering ? "wait" : "pointer",
             }}
           >
-            Đăng ký tài khoản
+            {isRegistering ? "Đang tạo tài khoản..." : "Tạo tài khoản"}
           </button>
         </form>
       )}
 
-      {/* FORGOT PASSWORD TAB */}
+      {/* PASSWORD RECOVERY FORM */}
       {tab === "forgot" && (
         <form onSubmit={handleForgotSubmit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          {forgotStep === "email" ? (
-            <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
-                Nhập Email tài khoản cần khôi phục *
-              </label>
-              <input
-                type="email"
-                required
-                placeholder="Vd: minhanh.tran@student.edumind.edu.vn"
-                value={forgotEmail}
-                onChange={(e) => setForgotEmail(e.target.value)}
-                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
-              />
-              <span style={{ fontSize: "10px", color: "#64748b", marginTop: "4px", display: "block" }}>
-                Hệ thống sẽ gửi mã xác nhận OTP về địa chỉ email này.
-              </span>
-            </div>
-          ) : (
-            <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
-                Nhập Mật khẩu mới *
-              </label>
-              <input
-                type="password"
-                required
-                placeholder="Tối thiểu 6 ký tự..."
-                value={newPass}
-                onChange={(e) => setNewPass(e.target.value)}
-                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
-              />
-            </div>
-          )}
+          <div>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+              Email tài khoản cần khôi phục *
+            </label>
+            <input
+              type="email"
+              required
+              placeholder="nguyenvana@gmail.com"
+              value={forgotEmail}
+              onChange={(e) => setForgotEmail(e.target.value)}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+            />
+            <span style={{ fontSize: "10px", color: "#64748b", marginTop: "4px", display: "block" }}>
+              Yêu cầu sẽ được chuyển đến quản trị viên. Nếu thông tin hợp lệ, Admin sẽ gửi liên kết khôi phục qua email.
+            </span>
+          </div>
 
           <button
             type="submit"
@@ -475,7 +530,10 @@ export function AuthModal({ isOpen, onClose, defaultTab = "login" }: AuthModalPr
               cursor: "pointer",
             }}
           >
-            {forgotStep === "email" ? "Tiếp tục gửi mã" : "Lưu mật khẩu mới"}
+            Gửi yêu cầu khôi phục
+          </button>
+          <button type="button" onClick={() => setTab("login")} style={{ background: "none", border: "none", color: "#4f46e5", fontSize: "11px", cursor: "pointer" }}>
+            Quay lại đăng nhập
           </button>
         </form>
       )}

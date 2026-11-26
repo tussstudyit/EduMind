@@ -1,13 +1,13 @@
 // ============================================================================
 // EDUMIND AI - SUBJECT & TOPIC MANAGEMENT COMPONENT (MODULE 2 - ADMIN ONLY)
-// Quản lý danh sách/chi tiết Môn học & Quản lý toàn bộ Chủ đề con (Topics)
+// Quản lý danh sách/chi tiết Môn học & Chủ đề con đồng bộ trực tiếp PostgreSQL
 // ============================================================================
 
 "use client";
 
 import React, { useState, useEffect } from "react";
 import { Subject, Topic } from "@/types";
-import { storageService } from "@/services/storageService";
+import { apiClient } from "@/services/apiClient";
 import { useToast } from "@/context/ToastContext";
 import { Icon } from "@/components/ui/Icons";
 import { Modal } from "@/components/ui/Modal";
@@ -17,6 +17,7 @@ export function SubjectManagement() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Modal Subject states
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
@@ -35,11 +36,27 @@ export function SubjectManagement() {
   const [topicOrder, setTopicOrder] = useState(1);
   const [topicHidden, setTopicHidden] = useState(false);
 
-  const loadData = () => {
-    const subs = storageService.getSubjects(true);
-    setSubjects(subs);
-    if (subs.length > 0 && !selectedSubject) {
-      setSelectedSubject(subs[0]);
+  const loadData = async (preferredSubjectId?: string) => {
+    setIsLoading(true);
+    try {
+      const subs = await apiClient.getSubjects(true);
+      setSubjects(subs);
+      const targetId = preferredSubjectId ?? selectedSubject?.id;
+      const nextSelected = subs.find((s) => s.id === targetId) || subs[0] || null;
+      setSelectedSubject(nextSelected);
+    } catch (err) {
+      error("Không tải được môn học", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadTopics = async (subjectId: string) => {
+    try {
+      const tList = await apiClient.getTopics(subjectId, true);
+      setTopics(tList);
+    } catch {
+      setTopics([]);
     }
   };
 
@@ -49,10 +66,11 @@ export function SubjectManagement() {
 
   useEffect(() => {
     if (selectedSubject) {
-      const tList = storageService.getTopics(selectedSubject.id, true);
-      setTopics(tList);
+      loadTopics(selectedSubject.id);
+    } else {
+      setTopics([]);
     }
-  }, [selectedSubject]);
+  }, [selectedSubject?.id]);
 
   // --- SUBJECT ACTIONS ---
   const handleOpenCreateSubject = () => {
@@ -75,54 +93,63 @@ export function SubjectManagement() {
     setIsSubjectModalOpen(true);
   };
 
-  const handleSaveSubject = (e: React.FormEvent) => {
+  const handleSaveSubject = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formCode.trim() || !formName.trim()) {
       error("Thiếu thông tin", "Mã môn học và tên môn học không được để trống.");
       return;
     }
 
-    const saved = storageService.saveSubject({
-      id: editingSubject ? editingSubject.id : undefined,
-      code: formCode.trim().toUpperCase(),
-      name: formName.trim(),
-      description: formDesc.trim(),
-      iconName: formIcon,
-      isHidden: formHidden,
-    });
+    try {
+      const saved = editingSubject
+        ? await apiClient.updateSubject(editingSubject.id, {
+            code: formCode.trim().toUpperCase(),
+            name: formName.trim(),
+            description: formDesc.trim(),
+            iconName: formIcon,
+            isHidden: formHidden,
+          })
+        : await apiClient.createSubject({
+            code: formCode.trim().toUpperCase(),
+            name: formName.trim(),
+            description: formDesc.trim(),
+            iconName: formIcon,
+            isHidden: formHidden,
+          });
 
-    success(
-      editingSubject ? "Cập nhật môn học thành công" : "Tạo môn học mới thành công",
-      `Môn học [${saved.code}] - ${saved.name} đã được lưu.`
-    );
-
-    setIsSubjectModalOpen(false);
-    loadData();
-    setSelectedSubject(saved);
-  };
-
-  const handleToggleHideSubject = (sub: Subject) => {
-    const updated = storageService.toggleHideSubject(sub.id);
-    if (updated) {
-      if (updated.isHidden) {
-        info("Đã ẩn môn học", `Môn học ${sub.name} đã được ẩn khỏi học sinh.`);
-      } else {
-        success("Đã hiện môn học", `Môn học ${sub.name} hiện đã hiển thị.`);
-      }
-      loadData();
-      if (selectedSubject?.id === sub.id) {
-        setSelectedSubject(updated);
-      }
+      success(
+        editingSubject ? "Cập nhật môn học thành công" : "Tạo môn học mới thành công",
+        `Môn học [${saved.code}] - ${saved.name} đã được đồng bộ lên hệ thống.`,
+      );
+      setIsSubjectModalOpen(false);
+      await loadData(saved.id);
+    } catch (err) {
+      error("Không lưu được môn học", err instanceof Error ? err.message : "Vui lòng thử lại.");
     }
   };
 
-  const handleDeleteSubject = (sub: Subject) => {
-    if (confirm(`Bạn có chắc chắn muốn xóa môn học [${sub.code}] ${sub.name}?`)) {
-      storageService.deleteSubject(sub.id);
+  const handleToggleHideSubject = async (sub: Subject) => {
+    try {
+      const updated = await apiClient.toggleHideSubject(sub.id);
+      if (updated.isHidden) {
+        info("Đã ẩn môn học", `Môn học ${sub.name} đã được ẩn khỏi học viên.`);
+      } else {
+        success("Đã hiện môn học", `Môn học ${sub.name} hiện đã hiển thị cho toàn hệ thống.`);
+      }
+      await loadData(updated.id);
+    } catch (err) {
+      error("Không đổi được trạng thái", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    }
+  };
+
+  const handleDeleteSubject = async (sub: Subject) => {
+    if (!confirm(`Bạn có chắc chắn muốn xóa môn học [${sub.code}] ${sub.name}?`)) return;
+    try {
+      await apiClient.deleteSubject(sub.id);
       success("Đã xóa môn học", `Môn học ${sub.name} đã được gỡ khỏi hệ thống.`);
-      const subs = storageService.getSubjects(true);
-      setSubjects(subs);
-      setSelectedSubject(subs[0] || null);
+      await loadData();
+    } catch (err) {
+      error("Không xóa được môn học", err instanceof Error ? err.message : "Vui lòng thử lại.");
     }
   };
 
@@ -145,42 +172,59 @@ export function SubjectManagement() {
     setIsTopicModalOpen(true);
   };
 
-  const handleSaveTopic = (e: React.FormEvent) => {
+  const handleSaveTopic = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSubject || !topicName.trim()) return;
 
-    storageService.saveTopic({
-      id: editingTopic ? editingTopic.id : undefined,
-      subjectId: selectedSubject.id,
-      name: topicName.trim(),
-      description: topicDesc.trim(),
-      order: Number(topicOrder),
-      isHidden: topicHidden,
-    });
-
-    success(editingTopic ? "Cập nhật chủ đề thành công" : "Đã thêm chủ đề con mới");
-    setIsTopicModalOpen(false);
-    setTopics(storageService.getTopics(selectedSubject.id, true));
-    loadData();
-  };
-
-  const handleToggleHideTopic = (t: Topic) => {
-    const updated = storageService.toggleHideTopic(t.id);
-    if (updated) {
-      info(updated.isHidden ? "Đã ẩn chủ đề con" : "Đã hiện chủ đề con");
-      if (selectedSubject) {
-        setTopics(storageService.getTopics(selectedSubject.id, true));
+    try {
+      if (editingTopic) {
+        await apiClient.updateTopic(editingTopic.id, {
+          subjectId: selectedSubject.id,
+          name: topicName.trim(),
+          description: topicDesc.trim(),
+          order: Number(topicOrder),
+          isHidden: topicHidden,
+        });
+      } else {
+        await apiClient.createTopic({
+          subjectId: selectedSubject.id,
+          name: topicName.trim(),
+          description: topicDesc.trim(),
+          order: Number(topicOrder),
+          isHidden: topicHidden,
+        });
       }
+
+      success(editingTopic ? "Cập nhật chủ đề thành công" : "Đã thêm chủ đề con mới");
+      setIsTopicModalOpen(false);
+      await loadTopics(selectedSubject.id);
+      await loadData(selectedSubject.id);
+    } catch (err) {
+      error("Không lưu được chủ đề", err instanceof Error ? err.message : "Vui lòng thử lại.");
     }
   };
 
-  const handleDeleteTopic = (topicId: string) => {
+  const handleToggleHideTopic = async (t: Topic) => {
     if (!selectedSubject) return;
-    if (confirm("Bạn có chắc chắn muốn xóa chủ đề con này?")) {
-      storageService.deleteTopic(topicId);
+    try {
+      const updated = await apiClient.toggleHideTopic(t.id);
+      info(updated.isHidden ? "Đã ẩn chủ đề con" : "Đã hiện chủ đề con");
+      await loadTopics(selectedSubject.id);
+    } catch (err) {
+      error("Không đổi được trạng thái", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    }
+  };
+
+  const handleDeleteTopic = async (topicId: string) => {
+    if (!selectedSubject) return;
+    if (!confirm("Bạn có chắc chắn muốn xóa chủ đề con này?")) return;
+    try {
+      await apiClient.deleteTopic(topicId);
       success("Đã xóa chủ đề con");
-      setTopics(storageService.getTopics(selectedSubject.id, true));
-      loadData();
+      await loadTopics(selectedSubject.id);
+      await loadData(selectedSubject.id);
+    } catch (err) {
+      error("Không xóa được chủ đề", err instanceof Error ? err.message : "Vui lòng thử lại.");
     }
   };
 
@@ -210,120 +254,130 @@ export function SubjectManagement() {
           </strong>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {subjects.map((sub) => {
-              const isSelected = selectedSubject?.id === sub.id;
-              return (
-                <div
-                  key={sub.id}
-                  onClick={() => setSelectedSubject(sub)}
-                  style={{
-                    padding: "12px",
-                    borderRadius: "10px",
-                    border: isSelected ? "1.5px solid #4f46e5" : "1px solid #e2e8f0",
-                    background: isSelected ? "#f5f3ff" : sub.isHidden ? "#f8fafc" : "#ffffff",
-                    cursor: "pointer",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "6px",
-                    boxShadow: "0 2px 6px rgba(0, 0, 0, 0.02)",
-                    opacity: sub.isHidden ? 0.75 : 1,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <span
-                        style={{
-                          padding: "2px 6px",
-                          borderRadius: "4px",
-                          background: isSelected ? "#4f46e5" : "#e2e8f0",
-                          color: isSelected ? "#ffffff" : "#475569",
-                          fontSize: "9px",
-                          fontWeight: 800,
-                        }}
-                      >
-                        {sub.code}
-                      </span>
-                      {sub.isHidden && (
+            {isLoading ? (
+              <div style={{ padding: "20px", textAlign: "center", color: "#94a3b8", fontSize: "12px" }}>
+                Đang tải danh sách môn học...
+              </div>
+            ) : subjects.length === 0 ? (
+              <div style={{ padding: "24px 12px", textAlign: "center", color: "#94a3b8", fontSize: "12px" }}>
+                Chưa có môn học nào trong hệ thống. Bấm &quot;+ Thêm môn học mới&quot; để tạo.
+              </div>
+            ) : (
+              subjects.map((sub) => {
+                const isSelected = selectedSubject?.id === sub.id;
+                return (
+                  <div
+                    key={sub.id}
+                    onClick={() => setSelectedSubject(sub)}
+                    style={{
+                      padding: "12px",
+                      borderRadius: "10px",
+                      border: isSelected ? "1.5px solid #4f46e5" : "1px solid #e2e8f0",
+                      background: isSelected ? "#f5f3ff" : sub.isHidden ? "#f8fafc" : "#ffffff",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "6px",
+                      boxShadow: "0 2px 6px rgba(0, 0, 0, 0.02)",
+                      opacity: sub.isHidden ? 0.75 : 1,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         <span
                           style={{
-                            padding: "2px 5px",
+                            padding: "2px 6px",
                             borderRadius: "4px",
-                            background: "#fee2e2",
-                            color: "#dc2626",
-                            fontSize: "8.5px",
-                            fontWeight: 700,
+                            background: isSelected ? "#4f46e5" : "#e2e8f0",
+                            color: isSelected ? "#ffffff" : "#475569",
+                            fontSize: "9px",
+                            fontWeight: 800,
                           }}
                         >
-                          ĐÃ ẨN
+                          {sub.code}
                         </span>
-                      )}
+                        {sub.isHidden && (
+                          <span
+                            style={{
+                              padding: "2px 5px",
+                              borderRadius: "4px",
+                              background: "#fee2e2",
+                              color: "#dc2626",
+                              fontSize: "8.5px",
+                              fontWeight: 700,
+                            }}
+                          >
+                            ĐÃ ẨN
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Action buttons */}
+                      <div style={{ display: "flex", gap: "3px" }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleHideSubject(sub);
+                          }}
+                          title={sub.isHidden ? "Hiện môn học" : "Ẩn môn học"}
+                          style={{
+                            padding: "4px",
+                            borderRadius: "4px",
+                            background: "#fff",
+                            border: "1px solid #e2e8f0",
+                            color: sub.isHidden ? "#d97706" : "#64748b",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <Icon name={sub.isHidden ? "eyeOff" : "eye"} size={12} />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenEditSubject(sub);
+                          }}
+                          title="Sửa môn học"
+                          style={{
+                            padding: "4px",
+                            borderRadius: "4px",
+                            background: "#fff",
+                            border: "1px solid #e2e8f0",
+                            color: "#4f46e5",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <Icon name="edit" size={12} />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteSubject(sub);
+                          }}
+                          title="Xóa môn học"
+                          style={{
+                            padding: "4px",
+                            borderRadius: "4px",
+                            background: "#fef2f2",
+                            border: "1px solid #fecaca",
+                            color: "#dc2626",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </div>
                     </div>
 
-                    {/* Action buttons */}
-                    <div style={{ display: "flex", gap: "3px" }}>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleHideSubject(sub);
-                        }}
-                        title={sub.isHidden ? "Hiện môn học" : "Ẩn môn học"}
-                        style={{
-                          padding: "4px",
-                          borderRadius: "4px",
-                          background: "#fff",
-                          border: "1px solid #e2e8f0",
-                          color: sub.isHidden ? "#d97706" : "#64748b",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <Icon name={sub.isHidden ? "eyeOff" : "eye"} size={12} />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleOpenEditSubject(sub);
-                        }}
-                        title="Sửa môn học"
-                        style={{
-                          padding: "4px",
-                          borderRadius: "4px",
-                          background: "#fff",
-                          border: "1px solid #e2e8f0",
-                          color: "#4f46e5",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <Icon name="edit" size={12} />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteSubject(sub);
-                        }}
-                        title="Xóa môn học"
-                        style={{
-                          padding: "4px",
-                          borderRadius: "4px",
-                          background: "#fef2f2",
-                          border: "1px solid #fecaca",
-                          color: "#dc2626",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <Icon name="trash" size={12} />
-                      </button>
+                    <strong style={{ fontSize: "12.5px", color: "#1e293b", margin: "2px 0" }}>
+                      {sub.name}
+                    </strong>
+                    <div style={{ fontSize: "10.5px", color: "#94a3b8" }}>
+                      {sub.topicCount || 0} Chủ đề con · {sub.courseCount || 0} Khóa học
                     </div>
                   </div>
-
-                  <strong style={{ fontSize: "12.5px", color: "#1e293b", margin: "2px 0" }}>
-                    {sub.name}
-                  </strong>
-                  <div style={{ fontSize: "10.5px", color: "#94a3b8" }}>
-                    {sub.topicCount} Chủ đề con · {sub.courseCount} Khóa học
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -395,7 +449,7 @@ export function SubjectManagement() {
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {topics.length === 0 ? (
                   <div style={{ padding: "30px", textAlign: "center", color: "#94a3b8", fontSize: "12px" }}>
-                    Chưa có chủ đề con nào. Hãy bấm "+ Thêm chủ đề con" để thiết lập khung kiến thức.
+                    Chưa có chủ đề con nào. Hãy bấm &quot;+ Thêm chủ đề con&quot; để thiết lập khung kiến thức.
                   </div>
                 ) : (
                   topics.map((t) => (
@@ -493,7 +547,11 @@ export function SubjectManagement() {
               </div>
             </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="panel" style={{ padding: "40px 24px", textAlign: "center", color: "#94a3b8", fontSize: "13px" }}>
+            Chọn hoặc thêm mới một môn học ở cột bên trái để quản lý danh sách chủ đề con.
+          </div>
+        )}
       </div>
 
       {/* Modal Add / Edit Subject */}

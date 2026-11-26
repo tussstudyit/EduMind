@@ -1,6 +1,6 @@
-# EduMind AI Frontend
+# EduMind AI Desktop Frontend
 
-Frontend application for EduMind AI, built with Next.js App Router, TypeScript, and Tailwind CSS.
+Desktop frontend for EduMind AI, built with Next.js App Router, TypeScript, and Tailwind CSS. The dedicated phone UI is in `../frontend-mobile`.
 
 ## Run locally
 
@@ -11,17 +11,6 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Current scope
+## Backend connection
 
-- Responsive student dashboard shell
-- Learning summary, courses, weekly activity, study schedule, and AI Tutor entry point
-- Sample data is currently local to the dashboard; backend integration is not connected yet
-
-## Planned FE slices
-
-1. Shared layouts and components
-2. Authentication screens
-3. Student course and lesson flow
-4. Assessments and progress views
-5. AI Tutor and OCR screens
-6. Teacher and Admin areas
+The frontend sends `/api/*` through the Next.js rewrite to the existing NestJS backend. It shares the same API and PostgreSQL database as the mobile frontend.

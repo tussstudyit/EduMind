@@ -9,20 +9,80 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { Conversation, ChatMessage } from "@/types";
+import { apiClient } from "@/services/apiClient";
 import { storageService } from "@/services/storageService";
 import { useToast } from "@/context/ToastContext";
 import { Icon } from "@/components/ui/Icons";
 
-interface AITutorViewProps {
-  initialPrompt?: string;
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={index} style={{ padding: "1px 4px", borderRadius: "4px", background: "#eef2ff", color: "#4338ca" }}>
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
 }
 
-export function AITutorView({ initialPrompt }: AITutorViewProps) {
+function renderMessageContent(content: string): React.ReactNode[] {
+  return content.split(/(```[^\n]*\n?[\s\S]*?```)/g).map((part, index) => {
+    const codeBlock = part.match(/^```[^\n]*\n?([\s\S]*?)```$/);
+    if (codeBlock) {
+      return (
+        <pre
+          key={index}
+          style={{
+            maxWidth: "100%",
+            overflowX: "auto",
+            margin: "10px 0",
+            padding: "12px",
+            borderRadius: "8px",
+            background: "#172033",
+            color: "#f8fafc",
+            fontSize: "11px",
+            lineHeight: 1.55,
+          }}
+        >
+          <code>{codeBlock[1]}</code>
+        </pre>
+      );
+    }
+    return <React.Fragment key={index}>{renderInlineMarkdown(part)}</React.Fragment>;
+  });
+}
+
+interface AITutorViewProps {
+  compact?: boolean;
+  onClose?: () => void;
+  initialPrompt?: string;
+  initialCourseId?: string;
+  initialConversationId?: string;
+  onInitialPromptConsumed?: () => void;
+  onInitialConversationConsumed?: () => void;
+}
+
+export function AITutorView({
+  compact = false,
+  onClose,
+  initialPrompt,
+  initialCourseId,
+  initialConversationId,
+  onInitialPromptConsumed,
+  onInitialConversationConsumed,
+}: AITutorViewProps) {
   const { currentUser } = useAuth();
-  const { success, info } = useToast();
+  const { success, info, warning } = useToast();
 
   const [activeTab, setActiveTab] = useState<"active" | "archived">("active");
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationCount, setActiveConversationCount] = useState(0);
+  const [archivedConversationCount, setArchivedConversationCount] = useState(0);
   const [activeConv, setActiveConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
@@ -35,56 +95,163 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
   const [isTyping, setIsTyping] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
-  const [streamingAssistantMsg, setStreamingAssistantMsg] = useState<ChatMessage | null>(null);
+  const [runtimeModelLabel, setRuntimeModelLabel] = useState<string>("gemini-3.8-flash (GEMINI)");
+
+  useEffect(() => {
+    let mounted = true;
+    apiClient
+      .getAiRuntimeStatus()
+      .then((status) => {
+        if (mounted && status?.modelName) {
+          setRuntimeModelLabel(`${status.modelName} (${(status.provider || "gemini").toUpperCase()})`);
+        }
+      })
+      .catch(() => {
+        const localCfg = storageService.getAIConfig();
+        if (mounted) {
+          setRuntimeModelLabel(`${localCfg.modelName} (${localCfg.provider.toUpperCase()})`);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingPromptRef = useRef(initialPrompt?.trim() || "");
+  const pendingCourseIdRef = useRef(initialCourseId);
+  const pendingConversationIdRef = useRef(initialConversationId);
+  const promptConsumedCallbackRef = useRef(onInitialPromptConsumed);
+  const conversationConsumedCallbackRef = useRef(onInitialConversationConsumed);
 
-  const loadConversations = (preserveActive: boolean = true) => {
-    const list = storageService.getConversations(currentUser.id, activeTab === "archived");
-    setConversations(list);
-    if (!preserveActive || !activeConv || !list.some((c) => c.id === activeConv.id)) {
-      setActiveConv(list[0] || null);
-    }
+  const stopCurrentResponse = () => {
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+    sendTimerRef.current = null;
+    streamTimerRef.current = null;
+    setIsTyping(false);
+    setIsStreaming(false);
+    setStreamingContent("");
   };
 
   useEffect(() => {
-    loadConversations(false);
+    promptConsumedCallbackRef.current = onInitialPromptConsumed;
+    conversationConsumedCallbackRef.current = onInitialConversationConsumed;
+  }, [onInitialPromptConsumed, onInitialConversationConsumed]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadConversations = async () => {
+      try {
+        const [activeList, archivedList] = await Promise.all([
+          apiClient.getConversations(currentUser.id, false),
+          apiClient.getConversations(currentUser.id, true),
+        ]);
+        if (cancelled) return;
+        setActiveConversationCount(activeList.length);
+        setArchivedConversationCount(archivedList.length);
+
+        const allConversations = [...activeList, ...archivedList];
+        const requestedConversation = pendingConversationIdRef.current
+          ? allConversations.find((conversation) => conversation.id === pendingConversationIdRef.current)
+          : undefined;
+        let selected = requestedConversation;
+
+        if (pendingPromptRef.current) {
+          let promptConversation = requestedConversation || activeList[0];
+          if (!promptConversation) {
+            promptConversation = await apiClient.createConversation(
+              currentUser.id,
+              pendingCourseIdRef.current ? "Hỏi đáp bài học" : "Cuộc trò chuyện mới với AI Tutor",
+              pendingCourseIdRef.current,
+            );
+          }
+          const { userMsg, assistantMsg } = await apiClient.sendMessage(
+            promptConversation.id,
+            pendingPromptRef.current,
+          );
+          if (cancelled) return;
+          setMessages(await apiClient.getMessages(promptConversation.id));
+          setActiveConv(promptConversation);
+          selected = promptConversation;
+          pendingPromptRef.current = "";
+          pendingCourseIdRef.current = undefined;
+          promptConsumedCallbackRef.current?.();
+          void userMsg;
+          void assistantMsg;
+        }
+
+        const list = activeTab === "archived" ? archivedList : activeList;
+        setConversations(list);
+        if (!selected && pendingConversationIdRef.current) {
+          selected = allConversations.find((conversation) => conversation.id === pendingConversationIdRef.current);
+        }
+        setActiveConv(selected || list[0] || null);
+        if (pendingConversationIdRef.current && selected) {
+          conversationConsumedCallbackRef.current?.();
+        }
+        pendingConversationIdRef.current = undefined;
+      } catch (error) {
+        if (!cancelled) {
+          warning("Không tải được lịch sử trò chuyện", error instanceof Error ? error.message : "Vui lòng thử lại.");
+          setConversations([]);
+          setActiveConv(null);
+        }
+      }
+    };
+
+    void loadConversations();
+    return () => {
+      cancelled = true;
+    };
   }, [currentUser.id, activeTab]);
 
   useEffect(() => {
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+
     if (activeConv) {
-      setMessages(storageService.getMessages(activeConv.id));
-      setIsTyping(false);
-      setIsStreaming(false);
-      setStreamingContent("");
-      setStreamingAssistantMsg(null);
+      let cancelled = false;
+      void apiClient.getMessages(activeConv.id).then((loadedMessages) => {
+        if (!cancelled) setMessages(loadedMessages);
+      }).catch((error) => {
+        if (!cancelled) warning("Không tải được tin nhắn", error instanceof Error ? error.message : "Vui lòng thử lại.");
+      });
+      return () => {
+        cancelled = true;
+        if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+        if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+      };
     } else {
       setMessages([]);
     }
-  }, [activeConv]);
+
+    return () => {
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+      if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+    };
+  }, [activeConv?.id, warning]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping, isStreaming, streamingContent]);
 
-  // Handle pre-seeded initial prompt from Learning Room or OCR
-  useEffect(() => {
-    if (initialPrompt && activeConv && !isStreaming && !isTyping) {
-      handleSend(initialPrompt);
-    }
-  }, [initialPrompt]);
-
   // Conversation Management Actions
-  const handleCreateNewConv = () => {
-    const newConv = storageService.createConversation(
-      currentUser.id,
-      "Cuộc trò chuyện mới với AI Tutor"
-    );
-    setActiveTab("active");
-    const list = storageService.getConversations(currentUser.id, false);
-    setConversations(list);
-    setActiveConv(newConv);
-    success("Đã tạo cuộc trò chuyện mới");
+  const handleCreateNewConv = async () => {
+    stopCurrentResponse();
+    try {
+      const newConv = await apiClient.createConversation(currentUser.id, "Cuộc trò chuyện mới với AI Tutor");
+      const list = await apiClient.getConversations(currentUser.id, false);
+      setActiveConversationCount(list.length);
+      setActiveTab("active");
+      setConversations(list);
+      setActiveConv(newConv);
+      success("Đã tạo cuộc trò chuyện mới");
+    } catch (error) {
+      warning("Không tạo được cuộc trò chuyện", error instanceof Error ? error.message : "Vui lòng thử lại.");
+    }
   };
 
   const handleStartRename = (conv: Conversation, e: React.MouseEvent) => {
@@ -93,105 +260,136 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
     setEditingTitle(conv.title);
   };
 
-  const handleSaveRename = (convId: string, e?: React.FormEvent | React.MouseEvent) => {
+  const handleSaveRename = async (convId: string, e?: React.FormEvent | React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (!editingTitle.trim()) return;
 
-    storageService.renameConversation(convId, editingTitle.trim());
-    setEditingConvId(null);
-    loadConversations(true);
-    if (activeConv?.id === convId) {
-      setActiveConv({ ...activeConv, title: editingTitle.trim() });
+    try {
+      const renamed = await apiClient.renameConversation(convId, editingTitle.trim());
+      setEditingConvId(null);
+      setConversations((items) => items.map((conversation) => conversation.id === convId ? renamed : conversation));
+      if (activeConv?.id === convId) setActiveConv(renamed);
+      info("Đã đổi tên cuộc trò chuyện");
+    } catch (error) {
+      warning("Không đổi được tên cuộc trò chuyện", error instanceof Error ? error.message : "Vui lòng thử lại.");
     }
-    info("Đã đổi tên cuộc trò chuyện");
   };
 
-  const handleToggleArchive = (convId: string, e: React.MouseEvent) => {
+  const handleToggleArchive = async (convId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const ok = storageService.toggleArchiveConversation(convId);
-    if (ok) {
+    stopCurrentResponse();
+    try {
+      await apiClient.toggleArchiveConversation(convId);
       const wasArchived = activeTab === "archived";
       info(wasArchived ? "Đã khôi phục hội thoại" : "Đã chuyển hội thoại vào lưu trữ");
-      loadConversations(false);
+      const [activeList, archivedList] = await Promise.all([
+        apiClient.getConversations(currentUser.id, false),
+        apiClient.getConversations(currentUser.id, true),
+      ]);
+      setActiveConversationCount(activeList.length);
+      setArchivedConversationCount(archivedList.length);
+      const list = wasArchived ? archivedList : activeList;
+      setConversations(list);
+      if (!list.some((conversation) => conversation.id === activeConv?.id)) {
+        setActiveConv(list[0] || null);
+      }
+    } catch (error) {
+      warning("Không cập nhật được trạng thái lưu trữ", error instanceof Error ? error.message : "Vui lòng thử lại.");
     }
   };
 
-  const handleDeleteConv = (convId: string, e: React.MouseEvent) => {
+  const handleDeleteConv = async (convId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Bạn có chắc chắn muốn xóa cuộc trò chuyện này khỏi lịch sử? Hành động này không thể hoàn tác.")) {
-      storageService.deleteConversation(convId);
-      info("Đã xóa cuộc trò chuyện");
-      loadConversations(false);
+      stopCurrentResponse();
+      try {
+        await apiClient.deleteConversation(convId);
+        info("Đã xóa cuộc trò chuyện");
+        const [activeList, archivedList] = await Promise.all([
+          apiClient.getConversations(currentUser.id, false),
+          apiClient.getConversations(currentUser.id, true),
+        ]);
+        setActiveConversationCount(activeList.length);
+        setArchivedConversationCount(archivedList.length);
+        const list = activeTab === "archived" ? archivedList : activeList;
+        setConversations(list);
+        if (!list.some((conversation) => conversation.id === activeConv?.id)) setActiveConv(list[0] || null);
+      } catch (error) {
+        warning("Không xóa được cuộc trò chuyện", error instanceof Error ? error.message : "Vui lòng thử lại.");
+      }
     }
   };
 
   // Sending and Simulated Streaming
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const text = textToSend || inputMessage;
-    if (!text.trim() || !activeConv || isTyping || isStreaming) return;
+    if (!text.trim() || !activeConv || activeConv.isArchived || isTyping || isStreaming) return;
 
     setInputMessage("");
-
-    // Lưu vào storage & nhận câu trả lời đã sinh từ Mock Engine
-    const { userMsg, assistantMsg } = storageService.sendMessage(activeConv.id, text.trim());
-
-    // Cập nhật tin nhắn người dùng ngay lập tức
-    setMessages((prev) => [...prev, userMsg]);
     setIsTyping(true);
-
-    // Mô phỏng độ trễ suy nghĩ của LLM (500ms) trước khi bắt đầu streaming
-    setTimeout(() => {
+    try {
+      const { userMsg, assistantMsg, modelUsed, providerUsed } = await apiClient.sendMessage(activeConv.id, text.trim());
+      if (modelUsed) {
+        setRuntimeModelLabel(`${modelUsed} (${(providerUsed || "gemini").toUpperCase()})`);
+      }
+      setMessages((prev) => [...prev, userMsg]);
       setIsTyping(false);
       setIsStreaming(true);
-      setStreamingAssistantMsg(assistantMsg);
       setStreamingContent("");
 
       const fullReply = assistantMsg.content;
       let currentIndex = 0;
-
-      const streamTimer = setInterval(() => {
-        // Tăng ngẫu nhiên 2 - 4 ký tự mỗi tick (20ms) để tạo cảm giác streaming chân thực
+      streamTimerRef.current = setInterval(() => {
         currentIndex += Math.floor(Math.random() * 3) + 2;
-
         if (currentIndex >= fullReply.length) {
-          clearInterval(streamTimer);
-          setStreamingContent(fullReply);
+          if (streamTimerRef.current) clearInterval(streamTimerRef.current);
+          streamTimerRef.current = null;
+          setStreamingContent("");
           setIsStreaming(false);
-          setStreamingAssistantMsg(null);
-          // Gắn tin nhắn AI hoàn chỉnh vào danh sách
           setMessages((prev) => [...prev, assistantMsg]);
+          void Promise.all([
+            apiClient.getConversations(currentUser.id, false),
+            apiClient.getConversations(currentUser.id, true),
+          ]).then(([activeList, archivedList]) => {
+            setActiveConversationCount(activeList.length);
+            setArchivedConversationCount(archivedList.length);
+            setConversations(activeTab === "archived" ? archivedList : activeList);
+          });
         } else {
           setStreamingContent(fullReply.substring(0, currentIndex));
         }
       }, 22);
-    }, 550);
+    } catch (error) {
+      setIsTyping(false);
+      warning("Không gửi được tin nhắn", error instanceof Error ? error.message : "Vui lòng thử lại.");
+    }
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px", height: "calc(100vh - 120px)" }}>
+    <div className={compact ? "ai-tutor-view ai-tutor-view-compact" : "ai-tutor-view"}>
       {/* Header */}
-      <div className="section-heading" style={{ margin: 0 }}>
+      {!compact && <div className="section-heading" style={{ margin: 0 }}>
         <div>
           <span className="eyebrow">MODULE 9: TRỢ LÝ HỌC TẬP THÔNG MINH (AI TUTOR)</span>
           <h2>Hỏi đáp Bài học, Hướng dẫn Giải bài tập & Giải thích Code với EduMind AI</h2>
         </div>
-      </div>
+      </div>}
 
       {/* Main Container */}
       <div
+        className="ai-tutor-layout"
         style={{
-          flex: 1,
-          display: "grid",
-          gridTemplateColumns: "300px 1fr",
           borderRadius: "14px",
           border: "1px solid #e2e8f0",
           background: "#ffffff",
           overflow: "hidden",
           boxShadow: "0 10px 30px rgba(0, 0, 0, 0.04)",
+          gridTemplateColumns: compact ? "minmax(0, 1fr)" : undefined,
         }}
       >
         {/* Left Sidebar: Conversations */}
-        <div
+        {!compact && <div
+          className="ai-tutor-sidebar"
           style={{
             background: "#f8fafc",
             borderRight: "1px solid #e2e8f0",
@@ -227,7 +425,10 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
             {/* Tabs: Active vs Archived */}
             <div style={{ display: "flex", marginTop: "10px", background: "#e2e8f0", borderRadius: "6px", padding: "2px" }}>
               <button
-                onClick={() => setActiveTab("active")}
+                onClick={() => {
+                  stopCurrentResponse();
+                  setActiveTab("active");
+                }}
                 style={{
                   flex: 1,
                   padding: "4px 8px",
@@ -240,10 +441,13 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                   cursor: "pointer",
                 }}
               >
-                Hội thoại ({storageService.getConversations(currentUser.id, false).length})
+                Hội thoại ({activeConversationCount})
               </button>
               <button
-                onClick={() => setActiveTab("archived")}
+                onClick={() => {
+                  stopCurrentResponse();
+                  setActiveTab("archived");
+                }}
                 style={{
                   flex: 1,
                   padding: "4px 8px",
@@ -256,7 +460,7 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                   cursor: "pointer",
                 }}
               >
-                Lưu trữ ({storageService.getConversations(currentUser.id, true).length})
+                Lưu trữ ({archivedConversationCount})
               </button>
             </div>
           </div>
@@ -276,7 +480,10 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                   <div
                     key={c.id}
                     onClick={() => {
-                      if (!isEditing) setActiveConv(c);
+                      if (!isEditing && activeConv?.id !== c.id) {
+                        stopCurrentResponse();
+                        setActiveConv(c);
+                      }
                     }}
                     style={{
                       padding: "10px 12px",
@@ -382,15 +589,15 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
               })
             )}
           </div>
-        </div>
+        </div>}
 
         {/* Right Main Chat Window */}
         {activeConv ? (
-          <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+          <div className="ai-tutor-window" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, overflow: "hidden" }}>
             {/* Chat Top Banner */}
             <div
               style={{
-                padding: "12px 20px",
+                padding: compact ? "10px 12px" : "12px 20px",
                 borderBottom: "1px solid #f1f5f9",
                 display: "flex",
                 alignItems: "center",
@@ -415,24 +622,35 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                 </div>
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <strong style={{ fontSize: "13.5px", color: "#1e293b" }}>{activeConv.title}</strong>
+                    <strong style={{ fontSize: compact ? "12px" : "13.5px", color: "#1e293b" }}>{compact ? "Trợ lý học tập AI" : activeConv.title}</strong>
                     {activeConv.isArchived && (
                       <span style={{ padding: "1px 6px", borderRadius: "4px", background: "#fef3c7", color: "#b45309", fontSize: "9px", fontWeight: 700 }}>
                         ĐÃ LƯU TRỮ
                       </span>
                     )}
                   </div>
-                  <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", color: "#10b981", fontWeight: 600 }}>
-                    <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
-                    EduMind AI sẵn sàng hỗ trợ bạn 24/7 (Độ trễ thấp & streaming)
+                  <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "10px", color: "#0e7490", fontWeight: 600 }}>
+                    <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#06b6d4", display: "inline-block" }} />
+                    {compact ? activeConv.title : `Đang kết nối mô hình: ${runtimeModelLabel} · RAG & Lịch sử đồng bộ`}
                   </span>
                 </div>
               </div>
 
               {/* History protection note (No edit rule compliance) */}
-              <div style={{ fontSize: "10.5px", color: "#64748b", background: "#f8fafc", padding: "4px 8px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
-                🔒 Tin nhắn đã gửi được bảo lưu nguyên trạng lịch sử
-              </div>
+              {compact ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                  <button type="button" aria-label="Bắt đầu cuộc trò chuyện mới" title="Cuộc trò chuyện mới" onClick={handleCreateNewConv} style={widgetHeaderButtonStyle}>
+                    <Icon name="plus" size={15} />
+                  </button>
+                  {onClose && <button type="button" aria-label="Đóng khung chat" title="Đóng khung chat" onClick={onClose} style={widgetHeaderButtonStyle}>
+                    <Icon name="x" size={15} />
+                  </button>}
+                </div>
+              ) : (
+                <div className="ai-tutor-history-note" style={{ fontSize: "10.5px", color: "#64748b", background: "#f8fafc", padding: "4px 8px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+                  🔒 Tin nhắn đã gửi được bảo lưu nguyên trạng lịch sử
+                </div>
+              )}
             </div>
 
             {/* Messages Body */}
@@ -440,10 +658,10 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
               style={{
                 flex: 1,
                 overflowY: "auto",
-                padding: "20px",
+                padding: compact ? "12px" : "20px",
                 display: "flex",
                 flexDirection: "column",
-                gap: "16px",
+                gap: compact ? "12px" : "16px",
                 background: "#f8fafc",
               }}
             >
@@ -479,7 +697,7 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {msg.content}
+                      {renderMessageContent(msg.content)}
                     </div>
 
                     {/* AI Suggestions Chips (Without Edit button on message) */}
@@ -488,7 +706,7 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                         {msg.suggestions.map((sug, idx) => (
                           <button
                             key={idx}
-                            disabled={isStreaming || isTyping}
+                            disabled={activeConv.isArchived || isStreaming || isTyping}
                             onClick={() => handleSend(sug)}
                             style={{
                               padding: "4px 10px",
@@ -498,7 +716,7 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                               border: "1px solid #c7d2fe",
                               fontSize: "10.5px",
                               fontWeight: 600,
-                              cursor: isStreaming || isTyping ? "not-allowed" : "pointer",
+                              cursor: activeConv.isArchived || isStreaming || isTyping ? "not-allowed" : "pointer",
                               transition: "all 0.15s ease",
                             }}
                           >
@@ -539,7 +757,7 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                       whiteSpace: "pre-wrap",
                     }}
                   >
-                    {streamingContent}
+                    {renderMessageContent(streamingContent)}
                     <span
                       style={{
                         display: "inline-block",
@@ -582,19 +800,21 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
             {/* Input Bar */}
             <div
               style={{
-                padding: "14px 20px",
+                padding: compact ? "10px 10px" : "14px 20px",
                 borderTop: "1px solid #f1f5f9",
                 background: "#ffffff",
                 display: "flex",
-                gap: "10px",
+                gap: compact ? "6px" : "10px",
                 alignItems: "center",
               }}
             >
               <input
                 type="text"
-                disabled={isStreaming || isTyping}
+                disabled={activeConv.isArchived || isStreaming || isTyping}
                 placeholder={
-                  isStreaming || isTyping
+                  activeConv.isArchived
+                    ? "Hội thoại đã lưu trữ — khôi phục để tiếp tục nhắn tin"
+                    : isStreaming || isTyping
                     ? "Vui lòng chờ AI hoàn tất câu trả lời..."
                     : "Đặt câu hỏi về bài giảng, giải bài tập hoặc nhờ giải thích code..."
                 }
@@ -605,21 +825,21 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                 }}
                 style={{
                   flex: 1,
-                  padding: "10px 18px",
+                  padding: compact ? "9px 12px" : "10px 18px",
                   borderRadius: "24px",
                   border: "1px solid #cbd5e1",
                   fontSize: "12.5px",
                   outline: "none",
-                  background: isStreaming || isTyping ? "#f8fafc" : "#ffffff",
+                  background: activeConv.isArchived || isStreaming || isTyping ? "#f8fafc" : "#ffffff",
                 }}
               />
               <button
-                disabled={isStreaming || isTyping || !inputMessage.trim()}
+                disabled={activeConv.isArchived || isStreaming || isTyping || !inputMessage.trim()}
                 onClick={() => handleSend()}
                 style={{
-                  padding: "10px 20px",
+                  padding: compact ? "9px 13px" : "10px 20px",
                   borderRadius: "24px",
-                  background: isStreaming || isTyping || !inputMessage.trim() ? "#cbd5e1" : "#4f46e5",
+                  background: activeConv.isArchived || isStreaming || isTyping || !inputMessage.trim() ? "#cbd5e1" : "#4f46e5",
                   color: "#ffffff",
                   border: "none",
                   fontWeight: 700,
@@ -627,7 +847,7 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
                   display: "flex",
                   alignItems: "center",
                   gap: "6px",
-                  cursor: isStreaming || isTyping || !inputMessage.trim() ? "not-allowed" : "pointer",
+                  cursor: activeConv.isArchived || isStreaming || isTyping || !inputMessage.trim() ? "not-allowed" : "pointer",
                   transition: "background 0.2s ease",
                 }}
               >
@@ -636,11 +856,25 @@ export function AITutorView({ initialPrompt }: AITutorViewProps) {
             </div>
           </div>
         ) : (
-          <div style={{ display: "grid", placeItems: "center", padding: "40px", color: "#94a3b8" }}>
-            Chọn một cuộc hội thoại hoặc bấm &quot;Đoạn chat mới&quot; để bắt đầu.
+          <div style={{ display: "grid", placeItems: "center", alignContent: "center", gap: "12px", padding: "24px", color: "#64748b", textAlign: "center", fontSize: "12px" }}>
+            <Icon name="sparkles" size={24} />
+            <span>{compact ? "Bắt đầu trò chuyện với trợ lý học tập AI." : "Chọn một cuộc hội thoại hoặc bấm “Đoạn chat mới” để bắt đầu."}</span>
+            {compact && <button type="button" onClick={handleCreateNewConv} style={{ padding: "9px 14px", border: 0, borderRadius: "8px", background: "#4f46e5", color: "#fff", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>Bắt đầu trò chuyện</button>}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+const widgetHeaderButtonStyle: React.CSSProperties = {
+  width: "30px",
+  height: "30px",
+  display: "grid",
+  placeItems: "center",
+  border: "1px solid #e2e8f0",
+  borderRadius: "8px",
+  background: "#ffffff",
+  color: "#475569",
+  cursor: "pointer",
+};

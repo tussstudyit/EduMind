@@ -8,19 +8,23 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { Course, Lesson, Material, StudentProgress } from "@/types";
-import { storageService } from "@/services/storageService";
+import { apiClient } from "@/services/apiClient";
+import { courseDataService } from "@/services/courseDataService";
+import { getCourseFile, isStoredCourseFile, parseVideoSource } from "@/services/courseFileUploadService";
 import { useToast } from "@/context/ToastContext";
 import { Icon } from "@/components/ui/Icons";
 import { Modal } from "@/components/ui/Modal";
+import { CourseVideoPlayer, VideoPlayableItem } from "@/components/ui/CourseVideoPlayer";
 
 interface LearningRoomProps {
   initialCourseId?: string;
-  onAskAITutor?: (question: string) => void;
+  onAskAITutor?: (question: string, courseId: string) => void;
+  onBrowseClasses?: () => void;
 }
 
-export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProps) {
+export function LearningRoom({ initialCourseId, onAskAITutor, onBrowseClasses }: LearningRoomProps) {
   const { currentUser } = useAuth();
-  const { success, info } = useToast();
+  const { success, info, error } = useToast();
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
@@ -30,61 +34,208 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
   const [progress, setProgress] = useState<StudentProgress | undefined>(undefined);
   const [previewMaterial, setPreviewMaterial] = useState<Material | null>(null);
   const [slidePage, setSlidePage] = useState(1);
+  const [selectedVideoId, setSelectedVideoId] = useState<string>("");
+
+  // Modal Đánh giá Giảng viên (n8n) & Báo cáo vi phạm khóa học (n8n) ngay tại Phòng học
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportReason, setReportReason] = useState("Nội dung bài giảng/video vi phạm hoặc không truy cập được");
+  const [reportDesc, setReportDesc] = useState("");
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
+
+  const handleSubmitRoomReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCourse) return;
+    setIsSubmittingReview(true);
+    try {
+      const res = await apiClient.submitTeacherReview({
+        teacherId: selectedCourse.teacherId,
+        courseId: selectedCourse.id,
+        rating: reviewRating,
+        comment: reviewComment.trim(),
+      });
+      success(
+        "Đã gửi đánh giá Sao Giảng viên qua n8n!",
+        `Trung bình sao lớn mới của ${selectedCourse.teacherName}: ⭐ ${res.summary.averageRating}/5.0 (${res.summary.totalReviews} đánh giá).`,
+      );
+      setIsReviewModalOpen(false);
+    } catch (err) {
+      error("Không gửi được đánh giá", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    } finally {
+      setIsSubmittingReview(false);
+    }
+  };
+
+  const handleSubmitRoomReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCourse) return;
+    setIsSubmittingReport(true);
+    try {
+      await apiClient.submitCourseReport(selectedCourse.id, {
+        reason: reportReason,
+        description: reportDesc.trim(),
+      });
+      success(
+        "Đã gửi báo cáo vi phạm qua n8n tới Admin!",
+        `Admin đã nhận thông báo từ luồng n8n để xem xét Tạm khóa hoặc Khóa khóa học "${selectedCourse.title}".`,
+      );
+      setIsReportModalOpen(false);
+      setReportDesc("");
+    } catch (err) {
+      error("Không gửi được báo cáo", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  };
+
+  const lessonVideoItems: VideoPlayableItem[] = React.useMemo(() => {
+    if (!activeLesson) return [];
+    const items: VideoPlayableItem[] = materials
+      .filter(
+        (material) =>
+          material.lessonId === activeLesson.id &&
+          (material.fileType === "video" || Boolean(parseVideoSource(material.fileUrl)?.isIframe)),
+      )
+      .map((m) => ({
+        id: m.id,
+        title: m.title,
+        url: m.fileUrl,
+        fileSize: m.fileSize,
+        description: m.description,
+      }));
+
+    if (
+      activeLesson.videoUrl &&
+      !items.some((item) => item.url === activeLesson.videoUrl)
+    ) {
+      items.unshift({
+        id: `lesson-video-${activeLesson.id}`,
+        title: `${activeLesson.title} (Video bài giảng)`,
+        url: activeLesson.videoUrl,
+      });
+    }
+    return items;
+  }, [activeLesson, materials]);
 
   useEffect(() => {
-    const list = storageService.getCourses("student");
-    setCourses(list);
+    let cancelled = false;
+    const load = async () => {
+      const [enrollments, availableCourses] = await Promise.all([
+        courseDataService.getEnrollments("student", currentUser.id),
+        courseDataService.getCourses("student", currentUser.id),
+      ]);
+      if (cancelled) return;
+      const activeCourseIds = new Set(enrollments
+        .filter((enrollment) => enrollment.status === "active")
+        .map((enrollment) => enrollment.courseId));
+      const list = availableCourses.filter((course) => activeCourseIds.has(course.id));
+      setCourses(list);
 
-    let targetCourse = list.find((c) => c.id === initialCourseId);
-    if (!targetCourse && list.length > 0) {
-      targetCourse = list[0];
-    }
-
-    if (targetCourse) {
-      setSelectedCourse(targetCourse);
-    }
-  }, [initialCourseId]);
+      const targetCourse = list.find((course) => course.id === initialCourseId) || list[0];
+      setSelectedCourse(targetCourse || null);
+    };
+    void load().catch((err) => error("Không tải được lớp học", err instanceof Error ? err.message : "Vui lòng thử lại."));
+    return () => { cancelled = true; };
+  }, [currentUser.id, initialCourseId]);
 
   useEffect(() => {
-    if (selectedCourse) {
-      const lesList = storageService.getLessons(selectedCourse.id);
+    if (!selectedCourse) return;
+    let cancelled = false;
+    Promise.all([
+      courseDataService.getLessons(selectedCourse.id),
+      courseDataService.getMaterials(selectedCourse.id),
+      apiClient.getProgress(selectedCourse.id).catch(() => undefined),
+    ]).then(async ([lesList, mats, p]) => {
+      if (cancelled) return;
       setLessons(lesList);
+      setMaterials(mats);
 
-      const p = storageService.getProgress(currentUser.id, selectedCourse.id);
-      setProgress(p);
-
-      // Chọn bài học đang học dở hoặc bài đầu tiên
       const lastId = p?.lastLessonId;
-      const found = lesList.find((l) => l.id === lastId);
-      setActiveLesson(found || lesList[0] || null);
+      const found = lesList.find((lesson) => lesson.id === lastId);
+      const nextLesson = found || lesList[0] || null;
+      setActiveLesson(nextLesson);
 
-      setMaterials(storageService.getMaterials(selectedCourse.id));
-    }
+      if (nextLesson) {
+        try {
+          const updatedP = await apiClient.accessLesson(selectedCourse.id, nextLesson.id);
+          if (!cancelled) setProgress(updatedP);
+          return;
+        } catch {
+          // ignore
+        }
+      }
+      if (!cancelled) setProgress(p);
+    }).catch((err) => {
+      if (!cancelled) error("Không tải được bài học", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    });
+    return () => { cancelled = true; };
   }, [selectedCourse, currentUser.id]);
 
-  const handleSelectLesson = (les: Lesson) => {
+  const handleSelectLesson = async (les: Lesson) => {
     setActiveLesson(les);
-    // Cập nhật vị trí học gần nhất
+    setSelectedVideoId("");
     if (selectedCourse) {
-      storageService.markLessonCompleted(currentUser.id, selectedCourse.id, les.id);
-      const updatedP = storageService.getProgress(currentUser.id, selectedCourse.id);
-      setProgress(updatedP);
+      try {
+        const updatedP = await apiClient.accessLesson(selectedCourse.id, les.id);
+        setProgress(updatedP);
+      } catch {
+        // ignore
+      }
     }
   };
 
-  const handleMarkDone = (lessonId: string) => {
+  const handleMarkDone = async (lessonId: string) => {
     if (!selectedCourse) return;
-    const updated = storageService.markLessonCompleted(currentUser.id, selectedCourse.id, lessonId);
-    setProgress(updated);
-    success("Đã hoàn thành bài học!", `Tiến độ khóa học của bạn đã đạt ${updated.percentCompleted}%.`);
+    try {
+      const updated = await apiClient.completeLesson(selectedCourse.id, lessonId);
+      setProgress(updated);
+      success("Đã hoàn thành bài học!", `Tiến độ khóa học của bạn đã đạt ${updated.percentCompleted}%.`);
+    } catch (err) {
+      error("Không lưu được tiến độ", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    }
   };
 
-  const handleDownloadMaterial = (m: Material) => {
-    info("Đang tải tài liệu...", `Tệp '${m.title}' (${m.fileSize}) bắt đầu tải về máy.`);
+  const handleDownloadMaterial = async (m: Material) => {
+    const parsedVid = parseVideoSource(m.fileUrl);
+    if (!isStoredCourseFile(m.fileUrl) && /^https?:\/\//i.test(m.fileUrl)) {
+      window.open(parsedVid?.directViewUrl || m.fileUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (!isStoredCourseFile(m.fileUrl)) {
+      info("Tệp mẫu", `Tệp '${m.title}' chưa có dữ liệu tải lên.`);
+      return;
+    }
+
+    try {
+      const storedFile = await getCourseFile(m.id);
+      if (!storedFile) throw new Error("Không tìm thấy tệp trên máy chủ.");
+      const objectUrl = URL.createObjectURL(storedFile.blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = storedFile.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      info("Đang tải tệp", `Đã bắt đầu tải '${storedFile.fileName}'.`);
+    } catch (downloadError) {
+      error("Không tải được tệp", downloadError instanceof Error ? downloadError.message : "Vui lòng thử lại.");
+    }
   };
 
   if (!selectedCourse) {
-    return <div style={{ padding: "40px", textAlign: "center", color: "#94a3b8" }}>Chưa có khóa học nào.</div>;
+    return (
+      <div style={{ padding: "56px 24px", textAlign: "center", background: "#fff", border: "1px dashed #cbd5e1", borderRadius: 14 }}>
+        <div style={{ display: "grid", placeItems: "center", width: 54, height: 54, margin: "0 auto 14px", borderRadius: 16, background: "#eef2ff", color: "#4f46e5" }}><Icon name="play" size={24} /></div>
+        <h2 style={{ margin: "0 0 6px", color: "#1e293b", fontSize: 18 }}>Bạn chưa tham gia lớp học nào</h2>
+        <p style={{ margin: "0 auto 16px", maxWidth: 450, color: "#64748b", fontSize: 13, lineHeight: 1.6 }}>Tham gia một lớp trước để xem bài giảng, tài liệu và lưu tiến độ học tập của bạn.</p>
+        <button type="button" onClick={onBrowseClasses} style={{ padding: "10px 15px", border: 0, borderRadius: 9, background: "#4f46e5", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Xem lớp đang mở</button>
+      </div>
+    );
   }
 
   const isCompleted = (lessonId: string) => {
@@ -101,6 +252,7 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
           background: "#ffffff",
           border: "1px solid #e2e8f0",
           display: "flex",
+          flexWrap: "wrap",
           alignItems: "center",
           justifyContent: "space-between",
           gap: "16px",
@@ -130,8 +282,63 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
           </div>
         </div>
 
-        {/* Progress Display */}
-        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+        {/* Progress Display & n8n Teacher Review / Course Report Actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          {courses.length > 1 && (
+            <select
+              value={selectedCourse.id}
+              onChange={(e) => {
+                const next = courses.find((c) => c.id === e.target.value);
+                if (next) setSelectedCourse(next);
+              }}
+              style={{
+                padding: "6px 10px",
+                borderRadius: "8px",
+                border: "1px solid #cbd5e1",
+                fontSize: "11.5px",
+                fontWeight: 600,
+                background: "#f8fafc",
+              }}
+            >
+              {courses.map((c) => (
+                <option key={c.id} value={c.id}>
+                  Đổi lớp: {c.title}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            onClick={() => setIsReviewModalOpen(true)}
+            style={{
+              padding: "7px 11px",
+              borderRadius: "8px",
+              border: "1px solid #fde68a",
+              background: "#fffbeb",
+              color: "#b45309",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            ⭐ Đánh giá GV (n8n)
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsReportModalOpen(true)}
+            style={{
+              padding: "7px 11px",
+              borderRadius: "8px",
+              border: "1px solid #fecaca",
+              background: "#fef2f2",
+              color: "#dc2626",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            🚨 Báo cáo vi phạm (n8n)
+          </button>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: "10px", color: "#64748b" }}>Tiến độ hoàn thành</div>
             <strong style={{ fontSize: "15px", color: "#4f46e5" }}>
@@ -158,7 +365,7 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
         <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <strong style={{ fontSize: "13px", color: "#1e293b" }}>Giáo trình bài học ({lessons.length})</strong>
-            <span style={{ fontSize: "10px", color: "#10b981", fontWeight: 700 }}>
+            <span style={{ fontSize: "10px", color: "#06b6d4", fontWeight: 700 }}>
               {progress?.completedLessonIds.length || 0}/{lessons.length} đã xong
             </span>
           </div>
@@ -189,7 +396,7 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
                       width: "22px",
                       height: "22px",
                       borderRadius: "50%",
-                      background: done ? "#10b981" : "#e2e8f0",
+                      background: done ? "#06b6d4" : "#e2e8f0",
                       color: done ? "#fff" : "#64748b",
                       display: "grid",
                       placeItems: "center",
@@ -206,7 +413,9 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
                         fontSize: "11.5px",
                         fontWeight: active ? 700 : 550,
                         color: active ? "#4338ca" : "#1e293b",
-                        truncate: "ellipsis",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
                       }}
                     >
                       {les.title}
@@ -221,76 +430,94 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
           {/* Downloadable Materials Section */}
           <div style={{ marginTop: "14px", paddingTop: "12px", borderTop: "1px solid #f1f5f9" }}>
             <strong style={{ fontSize: "12px", color: "#1e293b", display: "block", marginBottom: "8px" }}>
-              Tài liệu đính kèm ({materials.length})
+              Video &amp; Tài liệu buổi học ({materials.length})
             </strong>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {materials.map((m) => (
-                <div
-                  key={m.id}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: "6px",
-                    background: "#ffffff",
-                    border: "1px solid #e2e8f0",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: "8px",
-                  }}
-                >
+              {materials.map((m) => {
+                const parsedVid = parseVideoSource(m.fileUrl);
+                const isVideoMat = m.fileType === "video" || Boolean(parsedVid?.isIframe);
+                const handleOpenOrPlay = () => {
+                  if (isVideoMat) {
+                    const targetLes = lessons.find((l) => l.id === m.lessonId);
+                    if (targetLes && targetLes.id !== activeLesson?.id) {
+                      void handleSelectLesson(targetLes);
+                    }
+                    setSelectedVideoId(m.id);
+                  } else {
+                    setPreviewMaterial(m);
+                    setSlidePage(1);
+                  }
+                };
+                return (
                   <div
-                    onClick={() => {
-                      setPreviewMaterial(m);
-                      setSlidePage(1);
+                    key={m.id}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      background: selectedVideoId === m.id ? "#eef2ff" : "#ffffff",
+                      border: selectedVideoId === m.id ? "1px solid #6366f1" : "1px solid #e2e8f0",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "8px",
                     }}
-                    style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, cursor: "pointer", flex: 1 }}
-                    title="Bấm để xem trước tài liệu"
                   >
-                    <Icon name="fileText" size={14} className="text-indigo-600" />
-                    <div style={{ minWidth: 0 }}>
-                      <span style={{ fontSize: "11px", color: "#334155", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
-                      <span style={{ fontSize: "9px", color: "#94a3b8" }}>{m.fileType.toUpperCase()} · {m.fileSize}</span>
+                    <div
+                      onClick={handleOpenOrPlay}
+                      style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, cursor: "pointer", flex: 1 }}
+                      title={isVideoMat ? "Bấm để phát video bài giảng ngay trên Web" : "Bấm để xem trước tài liệu"}
+                    >
+                      <Icon name={isVideoMat ? "play" : "fileText"} size={14} className="text-indigo-600" />
+                      <div style={{ minWidth: 0 }}>
+                        <span style={{ fontSize: "11px", color: "#334155", fontWeight: isVideoMat ? 700 : 500, display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {m.title}
+                        </span>
+                        <span style={{ fontSize: "9px", color: "#64748b" }}>
+                          {parsedVid?.provider === "google-drive"
+                            ? "☁️ GOOGLE DRIVE VIDEO"
+                            : parsedVid?.provider === "youtube"
+                            ? "▶️ YOUTUBE VIDEO"
+                            : `${m.fileType.toUpperCase()} · ${m.fileSize}`}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      <button
+                        onClick={handleOpenOrPlay}
+                        title={isVideoMat ? "Phát video trên trình phát chính" : "Xem trước tài liệu"}
+                        style={{
+                          background: isVideoMat ? "#eef2ff" : "#f1f5f9",
+                          border: "1px solid #c7d2fe",
+                          borderRadius: "4px",
+                          padding: "3px 7px",
+                          cursor: "pointer",
+                          color: "#4338ca",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "3px",
+                          fontSize: "10px",
+                          fontWeight: 700,
+                        }}
+                      >
+                        <Icon name={isVideoMat ? "play" : "eye"} size={11} /> {isVideoMat ? "Phát" : "Xem"}
+                      </button>
+                      <button
+                        onClick={() => void handleDownloadMaterial(m)}
+                        title={parsedVid?.isIframe ? "Mở trên tab mới" : "Tải tệp về máy"}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: "4px",
+                          cursor: "pointer",
+                          color: "#64748b",
+                        }}
+                      >
+                        <Icon name="download" size={13} />
+                      </button>
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                    <button
-                      onClick={() => {
-                        setPreviewMaterial(m);
-                        setSlidePage(1);
-                      }}
-                      title="Xem trước tài liệu"
-                      style={{
-                        background: "#f1f5f9",
-                        border: "1px solid #e2e8f0",
-                        borderRadius: "4px",
-                        padding: "3px 6px",
-                        cursor: "pointer",
-                        color: "#4f46e5",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "2px",
-                        fontSize: "10px",
-                        fontWeight: 600,
-                      }}
-                    >
-                      <Icon name="eye" size={12} /> Xem
-                    </button>
-                    <button
-                      onClick={() => handleDownloadMaterial(m)}
-                      title="Tải tệp về máy"
-                      style={{
-                        background: "none",
-                        border: "none",
-                        padding: "4px",
-                        cursor: "pointer",
-                        color: "#64748b",
-                      }}
-                    >
-                      <Icon name="download" size={13} />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -299,19 +526,20 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
         {activeLesson ? (
           <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* Lesson Title & Mark as Done */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
               <div>
                 <span style={{ fontSize: "10px", fontWeight: 700, color: "#6366f1" }}>
                   BÀI {activeLesson.order} · {activeLesson.durationMinutes} PHÚT
                 </span>
-                <h1 style={{ margin: "4px 0 0", fontSize: "20px", color: "#1e293b" }}>{activeLesson.title}</h1>
+                <h1 style={{ margin: "4px 0 0", fontSize: "clamp(16px, 4vw, 20px)", color: "#1e293b" }}>{activeLesson.title}</h1>
               </div>
 
-              <div style={{ display: "flex", gap: "8px" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                 <button
                   onClick={() =>
                     onAskAITutor?.(
-                      `Chào AI Tutor, mình đang học bài '${activeLesson.title}'. Hãy giải thích cho mình tóm tắt nội dung chính và cho 1 ví dụ code nhé!`
+                      `Chào AI Tutor, mình đang học bài '${activeLesson.title}'. Hãy giải thích cho mình tóm tắt nội dung chính và cho 1 ví dụ code nhé!`,
+                      selectedCourse.id
                     )
                   }
                   style={{
@@ -339,9 +567,9 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
                     gap: "6px",
                     padding: "8px 14px",
                     borderRadius: "8px",
-                    background: isCompleted(activeLesson.id) ? "#ecfdf5" : "#10b981",
-                    border: isCompleted(activeLesson.id) ? "1px solid #a7f3d0" : "none",
-                    color: isCompleted(activeLesson.id) ? "#065f46" : "#ffffff",
+                    background: isCompleted(activeLesson.id) ? "#eff6ff" : "#4f46e5",
+                    border: isCompleted(activeLesson.id) ? "1px solid #bfdbfe" : "none",
+                    color: isCompleted(activeLesson.id) ? "#1d4ed8" : "#ffffff",
                     fontSize: "11.5px",
                     fontWeight: 700,
                     cursor: "pointer",
@@ -353,41 +581,17 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
               </div>
             </div>
 
-            {/* Video Player Placeholder */}
-            <div
-              style={{
-                width: "100%",
-                height: "280px",
-                borderRadius: "10px",
-                background: "linear-gradient(135deg, #1e1b4b, #312e81)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#ffffff",
-                position: "relative",
-                overflow: "hidden",
+            {/* Lesson Video Player (Supports both Google Drive / YouTube Links & Uploaded Server MP4 Streams) */}
+            <CourseVideoPlayer
+              items={lessonVideoItems}
+              activeItemId={selectedVideoId}
+              onSelectItem={(item) => setSelectedVideoId(item.id)}
+              onWatched85Percent={() => {
+                if (activeLesson && !isCompleted(activeLesson.id)) {
+                  void handleMarkDone(activeLesson.id);
+                }
               }}
-            >
-              <div
-                style={{
-                  width: "56px",
-                  height: "56px",
-                  borderRadius: "50%",
-                  background: "rgba(255, 255, 255, 0.2)",
-                  backdropFilter: "blur(4px)",
-                  display: "grid",
-                  placeItems: "center",
-                  cursor: "pointer",
-                  boxShadow: "0 10px 25px rgba(0, 0, 0, 0.3)",
-                }}
-              >
-                <Icon name="play" size={24} />
-              </div>
-              <span style={{ marginTop: "12px", fontSize: "12px", color: "#c7d2fe" }}>
-                Trình phát Video Bài giảng (Hỗ trợ phụ đề AI & Tua tốc độ 1.5x)
-              </span>
-            </div>
+            />
 
             {/* Lesson Markdown Content */}
             <div
@@ -418,7 +622,19 @@ export function LearningRoom({ initialCourseId, onAskAITutor }: LearningRoomProp
         {previewMaterial && (
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* Viewer Content by FileType */}
-            {previewMaterial.fileType === "slide" ? (
+            {previewMaterial.fileType === "video" ? (
+              <CourseVideoPlayer
+                items={[
+                  {
+                    id: previewMaterial.id,
+                    title: previewMaterial.title,
+                    url: previewMaterial.fileUrl,
+                    fileSize: previewMaterial.fileSize,
+                    description: previewMaterial.description,
+                  },
+                ]}
+              />
+            ) : previewMaterial.fileType === "slide" ? (
               <div
                 style={{
                   background: "#0f172a",
@@ -655,6 +871,115 @@ print("Kết quả:", result)`}</code>
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Modal Đánh giá Sao Giảng viên ngay tại Phòng học (n8n) */}
+      <Modal
+        isOpen={isReviewModalOpen}
+        onClose={() => setIsReviewModalOpen(false)}
+        title={`⭐ Đánh giá Giảng viên: ${selectedCourse.teacherName}`}
+        subtitle={`Khóa học: ${selectedCourse.title} · Tổng hợp Trung bình Sao lớn tự động qua n8n`}
+        maxWidth="520px"
+      >
+        <form onSubmit={handleSubmitRoomReview} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                type="button"
+                onClick={() => setReviewRating(star)}
+                style={{
+                  border: 0,
+                  background: "transparent",
+                  fontSize: "26px",
+                  color: star <= reviewRating ? "#f59e0b" : "#cbd5e1",
+                  cursor: "pointer",
+                }}
+              >
+                ★
+              </button>
+            ))}
+            <strong style={{ color: "#b45309", fontSize: "13px" }}>{reviewRating} / 5 sao</strong>
+          </div>
+          <textarea
+            rows={4}
+            value={reviewComment}
+            onChange={(e) => setReviewComment(e.target.value)}
+            placeholder="Nhập bình luận và nhận xét của bạn về bài giảng của giảng viên..."
+            style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+            <button
+              type="button"
+              onClick={() => setIsReviewModalOpen(false)}
+              style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", background: "#f8fafc", fontSize: "12px", cursor: "pointer" }}
+            >
+              Hủy
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmittingReview}
+              style={{ padding: "8px 16px", borderRadius: "8px", border: "none", background: "#4f46e5", color: "#fff", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+            >
+              {isSubmittingReview ? "⏳ Đang gửi qua n8n..." : "⭐ Gửi Đánh giá (n8n)"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal Báo cáo Vi phạm Khóa học ngay tại Phòng học (n8n) */}
+      <Modal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        title="🚨 Báo cáo Vi phạm Khóa học tới Admin (Luồng n8n)"
+        subtitle={`Khóa học: ${selectedCourse.title} · Giảng viên: ${selectedCourse.teacherName}`}
+        maxWidth="520px"
+      >
+        <form onSubmit={handleSubmitRoomReport} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+              Lý do báo cáo *
+            </label>
+            <select
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px", background: "#fff" }}
+            >
+              <option value="Nội dung bài giảng/video vi phạm hoặc không truy cập được">
+                Nội dung bài giảng/video vi phạm hoặc không truy cập được
+              </option>
+              <option value="Tài liệu học tập sai lệch hoặc vi phạm bản quyền">
+                Tài liệu học tập sai lệch hoặc vi phạm bản quyền
+              </option>
+              <option value="Nội dung không đúng chương trình môn học">
+                Nội dung không đúng chương trình môn học
+              </option>
+            </select>
+          </div>
+          <textarea
+            rows={4}
+            value={reportDesc}
+            onChange={(e) => setReportDesc(e.target.value)}
+            placeholder="Mô tả chi tiết để Admin kiểm tra và Tạm khóa / Khóa khóa học..."
+            style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+            <button
+              type="button"
+              onClick={() => setIsReportModalOpen(false)}
+              style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", background: "#f8fafc", fontSize: "12px", cursor: "pointer" }}
+            >
+              Hủy
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmittingReport}
+              style={{ padding: "8px 16px", borderRadius: "8px", border: "none", background: "#dc2626", color: "#fff", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}
+            >
+              {isSubmittingReport ? "⏳ Đang gửi qua n8n..." : "🚨 Gửi Báo cáo tới Admin"}
+            </button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

@@ -7,10 +7,11 @@
 
 import React, { useState, useEffect } from "react";
 import { User, UserRole } from "@/types";
-import { storageService } from "@/services/storageService";
+import { apiClient, PasswordResetRequest } from "@/services/apiClient";
 import { useToast } from "@/context/ToastContext";
 import { Icon } from "@/components/ui/Icons";
 import { Modal } from "@/components/ui/Modal";
+import { PasswordInput } from "@/components/ui/PasswordInput";
 
 export function UserManagement() {
   const { success, error, info } = useToast();
@@ -27,15 +28,52 @@ export function UserManagement() {
   const [formEmail, setFormEmail] = useState("");
   const [formRole, setFormRole] = useState<UserRole>("student");
   const [formPhone, setFormPhone] = useState("");
-  const [formDept, setFormDept] = useState("");
+  const [formInstitution, setFormInstitution] = useState("");
+  const [formPassword, setFormPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [resetRequests, setResetRequests] = useState<PasswordResetRequest[]>([]);
+  const [isLoadingResetRequests, setIsLoadingResetRequests] = useState(true);
+  const [sendingRequestId, setSendingRequestId] = useState<string | null>(null);
 
-  const loadUsers = () => {
-    setUsers(storageService.getUsers());
+  const loadUsers = async () => {
+    setIsLoading(true);
+    try {
+      setUsers(await apiClient.getUsers());
+    } catch (err) {
+      error("Không tải được người dùng", err instanceof Error ? err.message : "Hãy đăng nhập bằng tài khoản Admin.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   useEffect(() => {
     loadUsers();
+    loadResetRequests();
   }, []);
+
+  const loadResetRequests = async () => {
+    setIsLoadingResetRequests(true);
+    try {
+      setResetRequests(await apiClient.getPasswordResetRequests());
+    } catch (err) {
+      error("Không tải được yêu cầu khôi phục", err instanceof Error ? err.message : "Vui lòng thử tải lại.");
+    } finally {
+      setIsLoadingResetRequests(false);
+    }
+  };
+
+  const handleSendResetLink = async (request: PasswordResetRequest) => {
+    setSendingRequestId(request.id);
+    try {
+      await apiClient.sendPasswordResetLink(request.id);
+      success("Đã gửi email khôi phục", `Liên kết đặt lại mật khẩu đã được gửi đến ${request.email}.`);
+      await loadResetRequests();
+    } catch (err) {
+      error("Chưa gửi được email", err instanceof Error ? err.message : "Kiểm tra cấu hình SMTP và workflow n8n.");
+    } finally {
+      setSendingRequestId(null);
+    }
+  };
 
   const handleOpenCreate = () => {
     setEditingUser(null);
@@ -43,7 +81,8 @@ export function UserManagement() {
     setFormEmail("");
     setFormRole("student");
     setFormPhone("");
-    setFormDept("");
+    setFormInstitution("");
+    setFormPassword("");
     setIsModalOpen(true);
   };
 
@@ -53,44 +92,66 @@ export function UserManagement() {
     setFormEmail(user.email);
     setFormRole(user.role);
     setFormPhone(user.phone || "");
-    setFormDept(user.department || "");
+    setFormInstitution(user.institution || user.department || "");
+    setFormPassword("");
     setIsModalOpen(true);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim() || !formEmail.trim()) {
       error("Thiếu thông tin bắt buộc", "Vui lòng nhập họ tên và email hợp lệ.");
       return;
     }
 
-    storageService.saveUser({
-      id: editingUser ? editingUser.id : undefined,
-      name: formName.trim(),
-      email: formEmail.trim(),
-      role: formRole,
-      phone: formPhone.trim(),
-      department: formDept.trim(),
-    });
+    if (!editingUser && formPassword.length < 8) {
+      error("Mật khẩu chưa hợp lệ", "Mật khẩu tài khoản mới cần ít nhất 8 ký tự.");
+      return;
+    }
 
-    success(
-      editingUser ? "Đã cập nhật tài khoản" : "Tạo tài khoản thành công!",
-      `Người dùng ${formName} (${formRole.toUpperCase()}) đã được lưu vào hệ thống.`
-    );
+    try {
+      if (editingUser) {
+        await apiClient.updateUser(editingUser.id, {
+          name: formName.trim(), email: formEmail.trim(), role: formRole,
+          phone: formPhone.trim(), institution: formInstitution.trim(),
+        });
+      } else {
+        await apiClient.createUser({
+          name: formName.trim(), email: formEmail.trim(), role: formRole,
+          phone: formPhone.trim(), institution: formInstitution.trim(), password: formPassword,
+        });
+      }
 
-    setIsModalOpen(false);
-    loadUsers();
+      success(
+        editingUser ? "Đã cập nhật tài khoản" : "Tạo tài khoản thành công!",
+        `Người dùng ${formName} (${formRole.toUpperCase()}) đã được lưu vào hệ thống.`
+      );
+      setIsModalOpen(false);
+      await loadUsers();
+    } catch (err) {
+      error("Không lưu được tài khoản", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    }
   };
 
-  const handleToggleLock = (user: User) => {
-    const updated = storageService.toggleLockUser(user.id);
-    if (updated) {
-      if (updated.status === "locked") {
-        info("Đã khóa tài khoản", `Tài khoản ${user.name} đã bị khóa quyền truy cập.`);
-      } else {
-        success("Đã mở khóa tài khoản", `Tài khoản ${user.name} đã được khôi phục hoạt động.`);
-      }
-      loadUsers();
+  const handleToggleLock = async (user: User) => {
+    try {
+      const updated = await apiClient.updateUser(user.id, { status: user.status === "active" ? "locked" : "active" });
+      if (updated.status === "locked") info("Đã khóa tài khoản", `Tài khoản ${user.name} đã bị khóa quyền truy cập.`);
+      else success("Đã mở khóa tài khoản", `Tài khoản ${user.name} đã được khôi phục hoạt động.`);
+      await loadUsers();
+    } catch (err) {
+      error("Không cập nhật được trạng thái", err instanceof Error ? err.message : "Vui lòng thử lại.");
+    }
+  };
+
+  const handleDelete = async (user: User) => {
+    if (!window.confirm(`Xóa vĩnh viễn tài khoản ${user.name} (${user.email})?`)) return;
+    try {
+      await apiClient.deleteUser(user.id);
+      success("Đã xóa tài khoản", `${user.name} đã được xóa khỏi hệ thống.`);
+      await loadUsers();
+    } catch (err) {
+      error("Không xóa được tài khoản", err instanceof Error ? err.message : "Vui lòng thử lại.");
     }
   };
 
@@ -99,7 +160,7 @@ export function UserManagement() {
     const matchQuery =
       u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       u.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (u.department && u.department.toLowerCase().includes(searchQuery.toLowerCase()));
+      ([u.institution, u.department].some((value) => value?.toLowerCase().includes(searchQuery.toLowerCase())));
     return matchRole && matchQuery;
   });
 
@@ -119,6 +180,47 @@ export function UserManagement() {
           <span>+</span> Thêm tài khoản mới
         </button>
       </div>
+
+      {/* Password recovery requests */}
+      <section style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "16px 18px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+          <div>
+            <strong style={{ color: "#1e293b", fontSize: "13px" }}>Yêu cầu khôi phục mật khẩu</strong>
+            <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: "11px" }}>Admin duyệt yêu cầu rồi gửi liên kết đặt lại qua n8n.</p>
+          </div>
+          <button onClick={loadResetRequests} disabled={isLoadingResetRequests} style={{ padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: "6px", background: "#fff", color: "#475569", fontSize: "11px", cursor: "pointer" }}>
+            Tải lại
+          </button>
+        </div>
+        {isLoadingResetRequests ? (
+          <p style={{ color: "#94a3b8", fontSize: "11px", margin: 0 }}>Đang tải yêu cầu...</p>
+        ) : resetRequests.length === 0 ? (
+          <p style={{ color: "#94a3b8", fontSize: "11px", margin: 0 }}>Hiện chưa có yêu cầu khôi phục mật khẩu.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {resetRequests.map((request) => (
+              <div key={request.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "14px", padding: "10px 12px", borderRadius: "8px", background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+                <div style={{ minWidth: 0 }}>
+                  <strong style={{ color: "#1e293b", fontSize: "11px" }}>{request.name}</strong>
+                  <span style={{ color: "#64748b", fontSize: "11px", marginLeft: "8px" }}>{request.email}</span>
+                  <div style={{ color: "#94a3b8", fontSize: "10px", marginTop: "3px" }}>
+                    {new Date(request.requestedAt).toLocaleString("vi-VN")} · {request.status === "pending" ? "Đang chờ" : request.status === "sent" ? "Đã gửi email" : "Đã hoàn tất"}
+                  </div>
+                </div>
+                {request.status !== "completed" && (
+                  <button
+                    onClick={() => handleSendResetLink(request)}
+                    disabled={sendingRequestId !== null}
+                    style={{ flexShrink: 0, padding: "7px 10px", border: "none", borderRadius: "6px", background: sendingRequestId === request.id ? "#94a3b8" : "#4f46e5", color: "#fff", fontSize: "10.5px", fontWeight: 650, cursor: sendingRequestId !== null ? "wait" : "pointer" }}
+                  >
+                    {sendingRequestId === request.id ? "Đang gửi..." : request.status === "sent" ? "Gửi lại qua n8n" : "Gửi link qua n8n"}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Filter and Search Bar */}
       <div
@@ -200,14 +302,20 @@ export function UserManagement() {
             <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#64748b" }}>
               <th style={{ padding: "12px 16px", fontWeight: 700 }}>Người dùng</th>
               <th style={{ padding: "12px 16px", fontWeight: 700 }}>Vai trò</th>
-              <th style={{ padding: "12px 16px", fontWeight: 700 }}>Khoa / Lớp</th>
+              <th style={{ padding: "12px 16px", fontWeight: 700 }}>Trường</th>
               <th style={{ padding: "12px 16px", fontWeight: 700 }}>Trạng thái</th>
               <th style={{ padding: "12px 16px", fontWeight: 700 }}>Ngày tạo</th>
               <th style={{ padding: "12px 16px", fontWeight: 700, textAlign: "right" }}>Thao tác</th>
             </tr>
           </thead>
           <tbody>
-            {filteredUsers.length === 0 ? (
+            {isLoading ? (
+              <tr>
+                <td colSpan={6} style={{ padding: "30px", textAlign: "center", color: "#94a3b8" }}>
+                  Đang tải danh sách tài khoản...
+                </td>
+              </tr>
+            ) : filteredUsers.length === 0 ? (
               <tr>
                 <td colSpan={6} style={{ padding: "30px", textAlign: "center", color: "#94a3b8" }}>
                   Không tìm thấy tài khoản người dùng phù hợp.
@@ -286,7 +394,7 @@ export function UserManagement() {
 
                   {/* Department */}
                   <td style={{ padding: "12px 16px", color: "#475569" }}>
-                    {user.department || "Chưa thiết lập"}
+                    {user.institution || user.department || "Chưa thiết lập"}
                   </td>
 
                   {/* Status */}
@@ -362,6 +470,20 @@ export function UserManagement() {
                       >
                         <Icon name={user.status === "active" ? "lock" : "unlock"} size={13} />
                       </button>
+                      <button
+                        onClick={() => handleDelete(user)}
+                        title="Xóa tài khoản"
+                        style={{
+                          padding: "5px 8px",
+                          borderRadius: "6px",
+                          border: "1px solid #fecaca",
+                          background: "#fff",
+                          color: "#dc2626",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Icon name="trash" size={13} />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -421,10 +543,26 @@ export function UserManagement() {
             />
           </div>
 
+          {!editingUser && (
+            <div>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
+                Mật khẩu ban đầu * (tối thiểu 8 ký tự)
+              </label>
+              <PasswordInput
+                required
+                minLength={8}
+                autoComplete="new-password"
+                value={formPassword}
+                onChange={(e) => setFormPassword(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", fontSize: "12px" }}
+              />
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
             <div>
               <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
-                Vai trò hệ thống (RBAC) *
+                Vai trò *
               </label>
               <select
                 value={formRole}
@@ -439,9 +577,9 @@ export function UserManagement() {
                   outline: "none",
                 }}
               >
-                <option value="student">Học viên (Student)</option>
-                <option value="teacher">Giảng viên (Teacher)</option>
-                <option value="admin">Quản trị viên (Admin)</option>
+                <option value="student">Sinh viên</option>
+                <option value="teacher">Giảng viên</option>
+                <option value="admin">Quản trị viên</option>
               </select>
             </div>
 
@@ -451,7 +589,7 @@ export function UserManagement() {
               </label>
               <input
                 type="text"
-                placeholder="09..."
+                placeholder="Ví dụ: 0912 345 678"
                 value={formPhone}
                 onChange={(e) => setFormPhone(e.target.value)}
                 style={{
@@ -468,13 +606,14 @@ export function UserManagement() {
 
           <div>
             <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#475569", marginBottom: "4px" }}>
-              Khoa / Bộ môn / Lớp sinh viên
+              Trường
             </label>
             <input
               type="text"
-              placeholder="Vd: Khoa Công nghệ Thông tin"
-              value={formDept}
-              onChange={(e) => setFormDept(e.target.value)}
+              maxLength={160}
+              placeholder="Tên trường đang học hoặc công tác"
+              value={formInstitution}
+              onChange={(e) => setFormInstitution(e.target.value)}
               style={{
                 width: "100%",
                 padding: "8px 12px",

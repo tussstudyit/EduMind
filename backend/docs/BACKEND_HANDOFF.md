@@ -3,9 +3,9 @@
 
 > **Tài liệu tham khảo cho đội ngũ Backend Developer & Tech Lead**  
 > **Dự án:** EduMind AI LMS  
-> **Cấu trúc dữ liệu nguồn:** [frontend/src/types/index.ts](file:///d:/Nam%203/Ky1/dacs4/frontend/src/types/index.ts)  
-> **Tầng giao tiếp dịch vụ:** [frontend/src/services/storageService.ts](file:///d:/Nam%203/Ky1/dacs4/frontend/src/services/storageService.ts)  
-> **Dữ liệu mẫu khởi tạo:** [frontend/src/mock/initialData.ts](file:///d:/Nam%203/Ky1/dacs4/frontend/src/mock/initialData.ts)  
+> **Cấu trúc dữ liệu nguồn:** [frontend/src/types/index.ts](../../frontend/src/types/index.ts)  
+> **Tầng mock hiện tại:** [frontend/src/services/storageService.ts](../../frontend/src/services/storageService.ts)  
+> **Dữ liệu mẫu khởi tạo:** [frontend/src/mock/initialData.ts](../../frontend/src/mock/initialData.ts)  
 
 ---
 
@@ -71,7 +71,7 @@ Giao diện EduMind được thiết kế theo mô hình **Service Layer Abstrac
 
 ## 2. TỪ ĐIỂN DỮ LIỆU & TYPESCRIPT DATA MODELS
 
-Tất cả các định nghĩa dưới đây được đặt tại [frontend/src/types/index.ts](file:///d:/Nam%203/Ky1/dacs4/frontend/src/types/index.ts). Backend Database (PostgreSQL / MySQL / MongoDB) có thể map trực tiếp theo cấu trúc này:
+Tất cả các định nghĩa dưới đây được đặt tại [frontend/src/types/index.ts](../../frontend/src/types/index.ts). Backend Database (PostgreSQL / MySQL / MongoDB) có thể map theo cấu trúc này:
 
 ### Module 1: Tài khoản & Phân quyền
 ```typescript
@@ -328,6 +328,7 @@ export interface Recommendation {
   studentId: string;        // Khóa ngoại User.id
   title: string;            // Tiêu đề gợi ý
   description: string;      // Nội dung phân tích và gợi ý
+  reason?: string;          // Lý do cá nhân hóa gợi ý (nếu có)
   type: RecommendationType; // "course" | "review" | "exercise" | "tip"
   courseId?: string;        // ID khóa học gợi ý nếu có
   isRead: boolean;          // Đã bấm "Đánh dấu đã xem"
@@ -387,7 +388,7 @@ export interface AIConfig {
 
 ## 3. DANH MỤC CHI TIẾT TOÀN BỘ HÀM SERVICE & ĐỀ XUẤT RESTFUL API
 
-Tất cả 50+ hàm sau đây hiện diện đầy đủ trong [frontend/src/services/storageService.ts](file:///d:/Nam%203/Ky1/dacs4/frontend/src/services/storageService.ts).
+Các hàm mock được mô tả dưới đây nằm trong [frontend/src/services/storageService.ts](../../frontend/src/services/storageService.ts). Đây là lớp giả lập dùng `localStorage` ở frontend, không phải các endpoint backend đã triển khai.
 
 ### Hệ thống & Tiện ích
 | Tên hàm Service | Tham số đầu vào | Kiểu trả về | Đề xuất REST Endpoint | Mô tả nghiệp vụ |

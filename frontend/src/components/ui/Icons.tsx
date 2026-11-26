@@ -33,6 +33,7 @@ export type IconName =
   | "lock"
   | "unlock"
   | "fileText"
+  | "folder"
   | "upload"
   | "download"
   | "camera"
@@ -188,6 +189,12 @@ const iconPaths: Record<IconName, React.ReactNode> = {
       <line x1="16" y1="13" x2="8" y2="13" />
       <line x1="16" y1="17" x2="8" y2="17" />
       <polyline points="10 9 9 9 8 9" />
+    </>
+  ),
+  folder: (
+    <>
+      <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H10l2 2h7.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />
+      <path d="M3.5 9h17" />
     </>
   ),
   upload: (

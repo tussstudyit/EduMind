@@ -11,6 +11,7 @@ import {
   Course,
   Lesson,
   Material,
+  TeacherReview,
   Enrollment,
   Quiz,
   Question,
@@ -23,6 +24,10 @@ import {
   Notification,
   SystemLog,
   AIConfig,
+  AiCorpusDocument,
+  AiDatasetEntry,
+  AiTrainingJob,
+  AiModelVersion,
 } from "@/types";
 
 import {
@@ -53,6 +58,8 @@ const STORAGE_KEYS = {
   COURSES: "edumind_courses",
   LESSONS: "edumind_lessons",
   MATERIALS: "edumind_materials",
+  TEACHER_REVIEWS: "edumind_teacher_reviews",
+  SAVED_LIBRARY_ITEMS: "edumind_saved_library_items",
   ENROLLMENTS: "edumind_enrollments",
   QUIZZES: "edumind_quizzes",
   QUESTIONS: "edumind_questions",
@@ -65,6 +72,10 @@ const STORAGE_KEYS = {
   NOTIFICATIONS: "edumind_notifications",
   SYSTEM_LOGS: "edumind_system_logs",
   AI_CONFIG: "edumind_ai_config",
+  AI_CORPUS: "edumind_ai_corpus",
+  AI_DATASETS: "edumind_ai_datasets",
+  AI_JOBS: "edumind_ai_jobs",
+  AI_MODELS: "edumind_ai_models",
 };
 
 // Helper an toàn cho môi trường SSR của Next.js
@@ -92,7 +103,28 @@ function setItem<T>(key: string, value: T): void {
   }
 }
 
+function createLocalId(prefix: string): string {
+  const uuid = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${uuid}`;
+}
+
 export const storageService = {
+  removeDeletedTestAccount(): void {
+    if (typeof window === "undefined") return;
+    const REAL_DATA_MIGRATION_KEY = "edumind_real_data_sync_v1";
+    if (!localStorage.getItem(REAL_DATA_MIGRATION_KEY)) {
+      Object.values(STORAGE_KEYS).forEach((key) => {
+        if (key !== STORAGE_KEYS.SAVED_LIBRARY_ITEMS) {
+          localStorage.removeItem(key);
+        }
+      });
+      localStorage.removeItem("edumind_current_user_id");
+      localStorage.setItem(REAL_DATA_MIGRATION_KEY, "true");
+    }
+  },
+
   // --------------------------------------------------------------------------
   // HỆ THỐNG: KHÔI PHỤC DỮ LIỆU GỐC
   // --------------------------------------------------------------------------
@@ -122,6 +154,7 @@ export const storageService = {
   // MODULE 1: TÀI KHOẢN VÀ PHÂN QUYỀN
   // --------------------------------------------------------------------------
   getUsers(): User[] {
+    this.removeDeletedTestAccount();
     return getItem<User[]>(STORAGE_KEYS.USERS, initialUsers);
   },
 
@@ -149,6 +182,7 @@ export const storageService = {
         status: user.status || "active",
         avatar: user.name.split(" ").slice(-1)[0].substring(0, 2).toUpperCase() || "ND",
         phone: user.phone || "",
+        institution: user.institution || "",
         department: user.department || "",
         bio: user.bio || "",
         createdAt: now,
@@ -189,7 +223,7 @@ export const storageService = {
     return { success: true, user, message: "Đăng nhập thành công!" };
   },
 
-  register(name: string, email: string, role: UserRole = "student", phone?: string, dept?: string): { success: boolean; user?: User; message: string } {
+  register(name: string, email: string, role: UserRole = "student", phone?: string, institution?: string): { success: boolean; user?: User; message: string } {
     const users = this.getUsers();
     const exists = users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
     if (exists) {
@@ -200,7 +234,7 @@ export const storageService = {
       email: email.trim(),
       role,
       phone: phone?.trim(),
-      department: dept?.trim(),
+      institution: institution?.trim(),
     });
     return { success: true, user: newUser, message: "Đăng ký tài khoản mới thành công!" };
   },
@@ -529,6 +563,58 @@ export const storageService = {
     return true;
   },
 
+  getAllMaterials(): Material[] {
+    return getItem<Material[]>(STORAGE_KEYS.MATERIALS, initialMaterials);
+  },
+
+  getSavedLibraryItems(): string[] {
+    return getItem<string[]>(STORAGE_KEYS.SAVED_LIBRARY_ITEMS, []);
+  },
+
+  toggleSavedLibraryItem(itemId: string): boolean {
+    const saved = this.getSavedLibraryItems();
+    const next = saved.includes(itemId) ? saved.filter((id) => id !== itemId) : [itemId, ...saved];
+    setItem(STORAGE_KEYS.SAVED_LIBRARY_ITEMS, next);
+    return next.includes(itemId);
+  },
+
+  getTeacherReviews(teacherId?: string): TeacherReview[] {
+    const reviews = getItem<TeacherReview[]>(STORAGE_KEYS.TEACHER_REVIEWS, []);
+    return (teacherId ? reviews.filter((review) => review.teacherId === teacherId) : reviews)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  },
+
+  saveTeacherReview(input: { teacherId: string; courseId: string; student: User; rating: number; comment: string }): TeacherReview | null {
+    const hasJoined = this.getEnrollments(input.student.id, input.courseId).some((enrollment) => enrollment.status === "active");
+    const course = this.getCourseById(input.courseId);
+    if (!hasJoined || !course || course.teacherId !== input.teacherId || input.rating < 1 || input.rating > 5) return null;
+
+    const reviews = getItem<TeacherReview[]>(STORAGE_KEYS.TEACHER_REVIEWS, []);
+    const existing = reviews.find((review) => review.studentId === input.student.id && review.courseId === input.courseId);
+    const now = new Date().toISOString();
+    if (existing) {
+      existing.rating = input.rating;
+      existing.comment = input.comment.trim();
+      existing.updatedAt = now;
+      setItem(STORAGE_KEYS.TEACHER_REVIEWS, reviews);
+      return existing;
+    }
+
+    const review: TeacherReview = {
+      id: createLocalId("review"),
+      teacherId: input.teacherId,
+      courseId: input.courseId,
+      studentId: input.student.id,
+      studentName: input.student.name,
+      rating: input.rating,
+      comment: input.comment.trim(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    setItem(STORAGE_KEYS.TEACHER_REVIEWS, [review, ...reviews]);
+    return review;
+  },
+
   // --------------------------------------------------------------------------
   // MODULE 5: GHI DANH KHÓA HỌC
   // --------------------------------------------------------------------------
@@ -604,7 +690,7 @@ export const storageService = {
     return courseId ? quizzes.filter((q) => q.courseId === courseId) : quizzes;
   },
 
-  saveQuiz(quiz: Partial<Quiz> & { title: string; courseId: string }): Quiz {
+  saveQuiz(quiz: Partial<Quiz> & { title: string; courseId?: string | null }): Quiz {
     const quizzes = getItem<Quiz[]>(STORAGE_KEYS.QUIZZES, initialQuizzes);
     const index = quizzes.findIndex((q) => q.id === quiz.id);
 
@@ -614,13 +700,14 @@ export const storageService = {
       return quizzes[index];
     } else {
       const courses = getItem<Course[]>(STORAGE_KEYS.COURSES, initialCourses);
-      const c = courses.find((x) => x.id === quiz.courseId);
+      const courseId = quiz.courseId ?? null;
+      const c = courseId ? courses.find((x) => x.id === courseId) : undefined;
 
       const newQuiz: Quiz = {
         id: `quiz-${Date.now()}`,
         title: quiz.title,
-        courseId: quiz.courseId,
-        courseTitle: c ? c.title : "Khóa học",
+        courseId,
+        courseTitle: c ? c.title : (quiz.courseTitle || "Đề độc lập"),
         lessonId: quiz.lessonId,
         description: quiz.description || "",
         timeLimitMinutes: quiz.timeLimitMinutes || 15,
@@ -734,7 +821,7 @@ export const storageService = {
       id: `att-${Date.now()}`,
       quizId,
       quizTitle: quiz ? quiz.title : "Bài kiểm tra",
-      courseId: quiz ? quiz.courseId : "",
+      courseId: quiz?.courseId ?? null,
       studentId: student.id,
       studentName: student.name,
       studentAvatar: student.avatar,
@@ -847,32 +934,80 @@ export const storageService = {
     return list.find((p) => p.studentId === studentId && p.courseId === courseId);
   },
 
+  recordLessonAccess(studentId: string, courseId: string, lessonId: string): StudentProgress {
+    const lessons = this.getLessons(courseId);
+    if (!lessons.some((lesson) => lesson.id === lessonId)) {
+      throw new Error("Bài học không thuộc khóa học này.");
+    }
+
+    const list = getItem<StudentProgress[]>(STORAGE_KEYS.PROGRESS, initialProgress);
+    const now = new Date().toISOString();
+    let progress = list.find((item) => item.studentId === studentId && item.courseId === courseId);
+
+    if (!progress) {
+      progress = {
+        id: createLocalId("prog"),
+        studentId,
+        courseId,
+        completedLessonIds: [],
+        lastLessonId: lessonId,
+        lastStudiedAt: now,
+        percentCompleted: 0,
+        totalMinutesStudied: 0,
+      };
+      list.push(progress);
+    } else {
+      progress.lastLessonId = lessonId;
+      progress.lastStudiedAt = now;
+    }
+
+    setItem(STORAGE_KEYS.PROGRESS, list);
+
+    const enrollments = getItem<Enrollment[]>(STORAGE_KEYS.ENROLLMENTS, initialEnrollments);
+    const enrollment = enrollments.find((item) => item.studentId === studentId && item.courseId === courseId);
+    if (enrollment) {
+      enrollment.lastAccessedAt = now;
+      setItem(STORAGE_KEYS.ENROLLMENTS, enrollments);
+    }
+
+    return progress;
+  },
+
   markLessonCompleted(studentId: string, courseId: string, lessonId: string): StudentProgress {
     const list = getItem<StudentProgress[]>(STORAGE_KEYS.PROGRESS, initialProgress);
-    let p = list.find((item) => item.studentId === studentId && item.courseId === courseId);
     const lessons = this.getLessons(courseId);
-    const totalLessons = lessons.length || 1;
+    const lesson = lessons.find((item) => item.id === lessonId);
+    if (!lesson) {
+      throw new Error("Bài học không thuộc khóa học này.");
+    }
+
+    let p = list.find((item) => item.studentId === studentId && item.courseId === courseId);
+    const now = new Date().toISOString();
+    const alreadyCompleted = p?.completedLessonIds.includes(lessonId) ?? false;
 
     if (!p) {
       p = {
-        id: `prog-${Date.now()}`,
+        id: createLocalId("prog"),
         studentId,
         courseId,
         completedLessonIds: [lessonId],
         lastLessonId: lessonId,
-        lastStudiedAt: new Date().toISOString(),
-        percentCompleted: Math.round((1 / totalLessons) * 100),
-        totalMinutesStudied: 30,
+        lastStudiedAt: now,
+        percentCompleted: Math.round((1 / lessons.length) * 100),
+        totalMinutesStudied: lesson.durationMinutes,
       };
       list.push(p);
     } else {
-      if (!p.completedLessonIds.includes(lessonId)) {
+      if (!alreadyCompleted) {
         p.completedLessonIds.push(lessonId);
       }
       p.lastLessonId = lessonId;
-      p.lastStudiedAt = new Date().toISOString();
-      p.percentCompleted = Math.min(100, Math.round((p.completedLessonIds.length / totalLessons) * 100));
-      p.totalMinutesStudied += 25;
+      p.lastStudiedAt = now;
+      const validCompletedLessonIds = new Set(
+        p.completedLessonIds.filter((completedId) => lessons.some((item) => item.id === completedId))
+      );
+      p.percentCompleted = Math.min(100, Math.round((validCompletedLessonIds.size / lessons.length) * 100));
+      if (!alreadyCompleted) p.totalMinutesStudied += lesson.durationMinutes;
     }
 
     setItem(STORAGE_KEYS.PROGRESS, list);
@@ -882,7 +1017,7 @@ export const storageService = {
     const enr = enrollments.find((e) => e.studentId === studentId && e.courseId === courseId);
     if (enr) {
       enr.progressPercent = p.percentCompleted;
-      enr.lastAccessedAt = new Date().toISOString();
+      enr.lastAccessedAt = now;
       setItem(STORAGE_KEYS.ENROLLMENTS, enrollments);
     }
 
@@ -902,7 +1037,7 @@ export const storageService = {
   createConversation(studentId: string, title: string, courseId?: string): Conversation {
     const list = getItem<Conversation[]>(STORAGE_KEYS.CONVERSATIONS, initialConversations);
     const newConv: Conversation = {
-      id: `conv-${Date.now()}`,
+      id: createLocalId("conv"),
       studentId,
       courseId,
       title: title || "Cuộc trò chuyện mới với AI Tutor",
@@ -916,7 +1051,7 @@ export const storageService = {
     // Tạo tin nhắn chào mừng
     const messages = getItem<ChatMessage[]>(STORAGE_KEYS.MESSAGES, initialMessages);
     messages.push({
-      id: `msg-${Date.now()}`,
+      id: createLocalId("msg"),
       conversationId: newConv.id,
       sender: "assistant",
       content: `Xin chào! Tôi là **EduMind AI Tutor**. Tôi có thể giúp bạn giải đáp bài học, giải thích lỗi code, hoặc tóm tắt kiến thức. Bạn muốn tìm hiểu về nội dung nào?`,
@@ -935,6 +1070,8 @@ export const storageService = {
     const list = getItem<Conversation[]>(STORAGE_KEYS.CONVERSATIONS, initialConversations);
     const filtered = list.filter((c) => c.id !== conversationId);
     setItem(STORAGE_KEYS.CONVERSATIONS, filtered);
+    const messages = getItem<ChatMessage[]>(STORAGE_KEYS.MESSAGES, initialMessages);
+    setItem(STORAGE_KEYS.MESSAGES, messages.filter((message) => message.conversationId !== conversationId));
     return true;
   },
 
@@ -966,11 +1103,17 @@ export const storageService = {
   },
 
   sendMessage(conversationId: string, content: string): { userMsg: ChatMessage; assistantMsg: ChatMessage } {
+    const convs = getItem<Conversation[]>(STORAGE_KEYS.CONVERSATIONS, initialConversations);
+    const conversation = convs.find((item) => item.id === conversationId);
+    if (!conversation) throw new Error("Không tìm thấy cuộc trò chuyện.");
+    if (conversation.isArchived) throw new Error("Cuộc trò chuyện đã lưu trữ, hãy khôi phục trước khi gửi tin nhắn.");
+    if (!content.trim()) throw new Error("Tin nhắn không được để trống.");
+
     const messages = getItem<ChatMessage[]>(STORAGE_KEYS.MESSAGES, initialMessages);
     const now = new Date().toISOString();
 
     const userMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
+      id: createLocalId("msg"),
       conversationId,
       sender: "user",
       content,
@@ -982,7 +1125,9 @@ export const storageService = {
     const lower = content.toLowerCase();
     let replyText = `Cảm ơn câu hỏi của bạn! Dưới đây là phân tích chi tiết từ EduMind AI:\n\n- **Vấn đề cốt lõi:** ${content}\n- **Giải thích:** Trong học tập, việc hiểu bản chất từng khái niệm là then chốt. Hãy chia nhỏ bài toán thành các bước tuần tự và kiểm tra lại từng dòng logic.\n\nBạn có muốn tôi đưa ra một ví dụ code minh họa cụ thể không?`;
 
-    if (lower.includes("for") || lower.includes("vòng lặp") || lower.includes("loop")) {
+    if (lower.includes("while") || lower.includes("vòng lặp while")) {
+      replyText = `**Giải thích vòng lặp While trong Python:**\n\nVòng lặp \`while\` chạy lặp lại khi điều kiện còn đúng và dừng khi điều kiện trở thành sai. Hãy cập nhật biến điều kiện trong thân vòng lặp để tránh lặp vô hạn.\n\n\`\`\`python\nn = 1\nwhile n <= 3:\n    print(n)\n    n += 1\n\`\`\`\n\nỞ ví dụ này, vòng lặp in các số từ 1 đến 3 rồi kết thúc.`;
+    } else if (lower.includes("for") || lower.includes("vòng lặp") || lower.includes("loop")) {
       replyText = `**Giải thích về Vòng lặp For trong Python:**\n\nVòng lặp \`for\` được thiết kế để duyệt tuần tự qua các phần tử của một chuỗi (như list, tuple, string) hoặc một dãy số được tạo bởi \`range()\`.\n\n\`\`\`python\nfor i in range(1, 5):\n    print("Lặp lần thứ:", i)\n\`\`\`\n\n**Mẹo ghi nhớ:** Không cần khởi tạo biến đếm hay tăng biến đếm thủ công như \`while\`, Python tự động quản lý index cho bạn!`;
     } else if (lower.includes("ma trận") || lower.includes("định thức") || lower.includes("matrix")) {
       replyText = `**Cách tính định thức (Determinant) ma trận cấp 2:**\n\nCho ma trận $A = \\begin{bmatrix} a & b \\\\ c & d \\end{bmatrix}$, định thức được tính bằng:\n$$\\det(A) = ad - bc$$\n\nNếu $\\det(A) \\neq 0$, ma trận có nghịch đảo $A^{-1}$.`;
@@ -991,7 +1136,7 @@ export const storageService = {
     }
 
     const assistantMsg: ChatMessage = {
-      id: `msg-${Date.now() + 1}`,
+      id: createLocalId("msg"),
       conversationId,
       sender: "assistant",
       content: replyText,
@@ -1007,12 +1152,8 @@ export const storageService = {
     setItem(STORAGE_KEYS.MESSAGES, messages);
 
     // Cập nhật thời gian conversation
-    const convs = getItem<Conversation[]>(STORAGE_KEYS.CONVERSATIONS, initialConversations);
-    const conv = convs.find((c) => c.id === conversationId);
-    if (conv) {
-      conv.updatedAt = new Date().toISOString();
-      setItem(STORAGE_KEYS.CONVERSATIONS, convs);
-    }
+    conversation.updatedAt = new Date().toISOString();
+    setItem(STORAGE_KEYS.CONVERSATIONS, convs);
 
     return { userMsg, assistantMsg };
   },
@@ -1071,6 +1212,15 @@ export const storageService = {
     return scan;
   },
 
+  markOCRSentToAI(scanId: string): OCRScan | null {
+    const list = getItem<OCRScan[]>(STORAGE_KEYS.OCR_SCANS, initialOCRScans);
+    const scan = list.find((item) => item.id === scanId);
+    if (!scan) return null;
+    scan.sentToAI = true;
+    setItem(STORAGE_KEYS.OCR_SCANS, list);
+    return scan;
+  },
+
   sendOCRToAI(scanId: string, studentId: string): Conversation {
     const list = getItem<OCRScan[]>(STORAGE_KEYS.OCR_SCANS, initialOCRScans);
     const scan = list.find((s) => s.id === scanId);
@@ -1100,11 +1250,127 @@ export const storageService = {
   },
 
   // --------------------------------------------------------------------------
-  // MODULE 11: ĐỀ XUẤT HỌC TẬP
+  // MODULE 11: ĐỀ XUẤT HỌC TẬP (CÁ NHÂN HÓA TỰ ĐỘNG)
   // --------------------------------------------------------------------------
   getRecommendations(studentId: string): Recommendation[] {
     const list = getItem<Recommendation[]>(STORAGE_KEYS.RECOMMENDATIONS, initialRecommendations);
     return list.filter((r) => r.studentId === studentId && !r.isDismissed);
+  },
+
+  generatePersonalizedRecommendations(studentId: string): Recommendation[] {
+    const allRecs = getItem<Recommendation[]>(STORAGE_KEYS.RECOMMENDATIONS, initialRecommendations);
+    const retained = allRecs.filter((r) => r.studentId !== studentId || r.isRead);
+    const enrollments = this.getEnrollments(studentId).filter((e) => e.status === "active");
+    const publishedCourses = this.getCourses("student");
+    const attempts = this.getAttempts(undefined, studentId);
+    const convs = this.getConversations(studentId, false);
+    const scans = this.getOCRScans(studentId);
+    const aiCfg = this.getAIConfig();
+    const modelLabel = aiCfg.modelName || "gemini-3.8-flash";
+    const now = new Date().toISOString();
+
+    const generated: Recommendation[] = [];
+    const enrolledIds = new Set(enrollments.map((e) => e.courseId));
+
+    // 1. Gợi ý bài giảng tiếp theo dựa trên tiến độ từng khóa
+    for (const enr of enrollments.slice(0, 2)) {
+      const courseLessons = this.getLessons(enr.courseId);
+      const prog = this.getProgress(studentId, enr.courseId);
+      const completedSet = new Set(prog?.completedLessonIds || []);
+      const nextLesson = courseLessons.find((l) => !completedSet.has(l.id));
+      const pct = prog?.percentCompleted ?? enr.progressPercent ?? 0;
+
+      if (nextLesson) {
+        generated.push({
+          id: createLocalId("rec"),
+          studentId,
+          title: `Tiếp tục học: ${nextLesson.title}`,
+          description: `${nextLesson.description || "Bài học trọng tâm tiếp theo trong lộ trình của bạn."} (Thời lượng: ${nextLesson.durationMinutes} phút).`,
+          reason: `Dựa trên tiến độ ${pct}% khóa "${enr.courseTitle}" (${completedSet.size}/${courseLessons.length} bài đã xong) · ${modelLabel}`,
+          type: "review",
+          courseId: enr.courseId,
+          isRead: false,
+          isDismissed: false,
+          createdAt: now,
+        });
+      }
+    }
+
+    // 2. Gợi ý bài kiểm tra ôn tập dựa trên điểm số hoặc bài chưa thi
+    const lowAttempt = attempts.find(
+      (a) => (a.status === "submitted" || a.status === "graded") && a.totalScore / Math.max(a.maxScore, 1) < 0.75,
+    );
+    if (lowAttempt) {
+      generated.push({
+        id: createLocalId("rec"),
+        studentId,
+        title: `Ôn tập củng cố: ${lowAttempt.quizTitle}`,
+        description: `Bạn đạt ${lowAttempt.totalScore}/${lowAttempt.maxScore}đ ở lần làm bài trước. Hãy xem lại các câu chưa đạt điểm tối đa và hỏi AI Tutor để nắm vững phương pháp giải.`,
+        reason: `Phát hiện điểm kiểm tra cần củng cố (${lowAttempt.totalScore}/${lowAttempt.maxScore}đ) · ${modelLabel}`,
+        type: "exercise",
+        courseId: lowAttempt.courseId ?? undefined,
+        isRead: false,
+        isDismissed: false,
+        createdAt: now,
+      });
+    } else {
+      const quizzes = this.getQuizzes().filter((q) => q.isPublished);
+      const attemptedQuizIds = new Set(attempts.map((a) => a.quizId));
+      const nextQuiz = quizzes.find((q) => !attemptedQuizIds.has(q.id));
+      if (nextQuiz) {
+        generated.push({
+          id: createLocalId("rec"),
+          studentId,
+          title: `Thử sức bài kiểm tra: ${nextQuiz.title}`,
+          description: `Đề gồm ${nextQuiz.questionCount} câu hỏi (${nextQuiz.timeLimitMinutes} phút). Hoàn thành bài kiểm tra để AI đánh giá mức độ thành thạo của bạn.`,
+          reason: `Bài kiểm tra đánh giá định kỳ chưa thực hiện · ${modelLabel}`,
+          type: "exercise",
+          courseId: nextQuiz.courseId ?? undefined,
+          isRead: false,
+          isDismissed: false,
+          createdAt: now,
+        });
+      }
+    }
+
+    // 3. Gợi ý ôn tập từ lịch sử hỏi đáp AI Tutor & Quét OCR
+    if (convs.length > 0 || scans.length > 0) {
+      const topicTitle = convs[0]?.title || `Tài liệu OCR ${scans[0]?.fileName}`;
+      generated.push({
+        id: createLocalId("rec"),
+        studentId,
+        title: `Luyện tập mở rộng: ${topicTitle.slice(0, 70)}`,
+        description: `Dựa trên chủ đề "${topicTitle}" bạn vừa trao đổi cùng AI Tutor / OCR, hãy thực hành thêm 2-3 bài tập biến thể để ghi nhớ sâu công thức.`,
+        reason: `Cá nhân hóa từ lịch sử tương tác AI Tutor & Quét OCR gần nhất · ${modelLabel}`,
+        type: "tip",
+        courseId: convs[0]?.courseId,
+        isRead: false,
+        isDismissed: false,
+        createdAt: now,
+      });
+    }
+
+    // 4. Gợi ý khóa học mới bổ trợ
+    const unenrolled = publishedCourses.filter((c) => !enrolledIds.has(c.id));
+    if (unenrolled.length > 0) {
+      const targetCourse = unenrolled[0];
+      generated.push({
+        id: createLocalId("rec"),
+        studentId,
+        title: `Khám phá khóa học: ${targetCourse.title}`,
+        description: `${targetCourse.description} (Giảng viên: ${targetCourse.teacherName} · ${targetCourse.durationHours} giờ).`,
+        reason: `Khóa học bổ trợ môn ${targetCourse.subjectName} phù hợp với lộ trình hiện tại · ${modelLabel}`,
+        type: "course",
+        courseId: targetCourse.id,
+        isRead: false,
+        isDismissed: false,
+        createdAt: now,
+      });
+    }
+
+    const updated = [...generated, ...retained];
+    setItem(STORAGE_KEYS.RECOMMENDATIONS, updated);
+    return updated.filter((r) => r.studentId === studentId && !r.isDismissed);
   },
 
   markRecommendationRead(recId: string): void {
@@ -1208,18 +1474,309 @@ export const storageService = {
   },
 
   getAIConfig(): AIConfig {
-    return getItem<AIConfig>(STORAGE_KEYS.AI_CONFIG, initialAIConfig);
+    const cfg = getItem<AIConfig>(STORAGE_KEYS.AI_CONFIG, initialAIConfig);
+    if (
+      !cfg.modelName ||
+      cfg.modelName.startsWith("gemini-1.5") ||
+      cfg.modelName.startsWith("gemini-2.0")
+    ) {
+      cfg.modelName = "gemini-3.8-flash";
+    }
+    return cfg;
   },
 
   updateAIConfig(config: Partial<AIConfig>): AIConfig {
     const current = this.getAIConfig();
+    let apiKeyMasked = config.apiKeyMasked ?? current.apiKeyMasked;
+    if (config.apiKey && config.apiKey.trim() && !config.apiKey.includes("•")) {
+      const k = config.apiKey.trim();
+      apiKeyMasked = k.length > 8 ? `${k.slice(0, 6)}••••••••••••••••••••${k.slice(-4)}` : "••••••••";
+    }
     const updated: AIConfig = {
       ...current,
       ...config,
+      apiKeyMasked,
       updatedAt: new Date().toISOString(),
     };
     setItem(STORAGE_KEYS.AI_CONFIG, updated);
-    this.addSystemLog("AI_CONFIG_UPDATED", `Cập nhật cấu hình mô hình AI: ${updated.modelName} [${updated.ocrEngine}]`);
+    this.addSystemLog("AI_CONFIG_UPDATED", `Cập nhật cấu hình mô hình AI: ${updated.provider.toUpperCase()} / ${updated.modelName} [OCR: ${updated.ocrEngine}]`);
     return updated;
+  },
+
+  // --------------------------------------------------------------------------
+  // MODULE 14: KHO DỮ LIỆU & PIPELINE TRAIN / FINE-TUNE AI (LOCAL FALLBACK)
+  // --------------------------------------------------------------------------
+  getCorpusDocuments(): AiCorpusDocument[] {
+    return getItem<AiCorpusDocument[]>(STORAGE_KEYS.AI_CORPUS, []);
+  },
+
+  saveCorpusDocument(doc: Partial<AiCorpusDocument> & { title: string; subject: string; fileName: string }): AiCorpusDocument {
+    const list = this.getCorpusDocuments();
+    const now = new Date().toISOString();
+    const text = (doc.extractedText || `${doc.title}. ${doc.description || ""}`).trim();
+    const newDoc: AiCorpusDocument = {
+      id: doc.id || createLocalId("corpus"),
+      uploaderId: doc.uploaderId || "student-archive",
+      uploaderName: doc.uploaderName || "Học viên EduMind",
+      uploaderRole: doc.uploaderRole || "student",
+      title: doc.title.trim(),
+      description: doc.description?.trim() || "",
+      subject: doc.subject.trim(),
+      category: doc.category || "Ghi chú học tập",
+      fileName: doc.fileName,
+      mimeType: doc.mimeType || "application/octet-stream",
+      fileSize: doc.fileSize || text.length,
+      extractedText: text,
+      chunkCount: Math.max(1, Math.ceil(text.length / 500)),
+      status: doc.uploaderRole === "admin" || doc.uploaderRole === "teacher" ? "indexed" : (doc.status || "pending_review"),
+      reviewedBy: doc.reviewedBy ?? null,
+      reviewNotes: doc.reviewNotes ?? null,
+      includedInTraining: doc.includedInTraining ?? (doc.uploaderRole === "admin" || doc.uploaderRole === "teacher"),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const existingIdx = list.findIndex((item) => item.id === newDoc.id);
+    if (existingIdx >= 0) {
+      list[existingIdx] = { ...list[existingIdx], ...newDoc, updatedAt: now };
+    } else {
+      list.unshift(newDoc);
+    }
+    setItem(STORAGE_KEYS.AI_CORPUS, list);
+    return newDoc;
+  },
+
+  reviewCorpusDocument(
+    id: string,
+    status: "approved" | "indexed" | "rejected",
+    reviewerName: string,
+    reviewNotes?: string,
+  ): { document: AiCorpusDocument; generatedPairs: number } | null {
+    const list = this.getCorpusDocuments();
+    const doc = list.find((d) => d.id === id);
+    if (!doc) return null;
+    doc.status = status;
+    doc.reviewedBy = reviewerName;
+    doc.reviewNotes =
+      reviewNotes ||
+      (status === "rejected"
+        ? "Tài liệu không đạt yêu cầu đưa vào kho huấn luyện."
+        : "Đã kiểm duyệt và trích xuất vào kho dữ liệu huấn luyện AI.");
+    doc.includedInTraining = status !== "rejected";
+    doc.updatedAt = new Date().toISOString();
+    setItem(STORAGE_KEYS.AI_CORPUS, list);
+
+    let generatedPairs = 0;
+    if (status === "approved" || status === "indexed") {
+      this.saveTrainingDataset({
+        sourceType: "document",
+        sourceId: doc.id,
+        subject: doc.subject,
+        prompt: `Hãy tóm tắt và giải thích kiến thức cốt lõi trong tài liệu "${doc.title}" (${doc.subject}).`,
+        expectedResponse: `**Trích xuất từ học liệu đã kiểm duyệt "${doc.title}":**\n\n${doc.extractedText}\n\n**Ứng dụng:** Áp dụng trực tiếp vào bài tập và bài kiểm tra môn ${doc.subject}.`,
+        tags: [doc.subject, doc.category, "corpus-verified"],
+        qualityScore: 0.95,
+        status: "validated",
+      });
+      generatedPairs = 1;
+    }
+    this.addSystemLog("AI_CORPUS_REVIEWED", `Duyệt tài liệu kho AI "${doc.title}" -> ${status.toUpperCase()}`);
+    return { document: doc, generatedPairs };
+  },
+
+  deleteCorpusDocument(id: string): void {
+    const list = this.getCorpusDocuments().filter((d) => d.id !== id);
+    setItem(STORAGE_KEYS.AI_CORPUS, list);
+  },
+
+  getTrainingDatasets(): AiDatasetEntry[] {
+    return getItem<AiDatasetEntry[]>(STORAGE_KEYS.AI_DATASETS, []);
+  },
+
+  saveTrainingDataset(
+    entry: Partial<AiDatasetEntry> & { subject: string; prompt: string; expectedResponse: string },
+  ): AiDatasetEntry {
+    const list = this.getTrainingDatasets();
+    const now = new Date().toISOString();
+    if (entry.id) {
+      const idx = list.findIndex((item) => item.id === entry.id);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...entry, updatedAt: now };
+        setItem(STORAGE_KEYS.AI_DATASETS, list);
+        return list[idx];
+      }
+    }
+    const created: AiDatasetEntry = {
+      id: createLocalId("ds"),
+      sourceType: entry.sourceType || "manual",
+      sourceId: entry.sourceId ?? null,
+      subject: entry.subject.trim(),
+      prompt: entry.prompt.trim(),
+      expectedResponse: entry.expectedResponse.trim(),
+      systemPrompt: entry.systemPrompt || "Bạn là EduMind AI Tutor — trợ lý học tập thông minh.",
+      tags: entry.tags?.length ? entry.tags : [entry.subject],
+      qualityScore: Number(entry.qualityScore ?? 0.95),
+      status: entry.status || "validated",
+      createdAt: now,
+      updatedAt: now,
+    };
+    list.unshift(created);
+    setItem(STORAGE_KEYS.AI_DATASETS, list);
+    return created;
+  },
+
+  deleteTrainingDataset(id: string): void {
+    const list = this.getTrainingDatasets().filter((d) => d.id !== id);
+    setItem(STORAGE_KEYS.AI_DATASETS, list);
+  },
+
+  harvestTrainingDatasets(): { addedCount: number; totalCount: number } {
+    const list = this.getTrainingDatasets();
+    const existingPrompts = new Set(list.map((d) => d.prompt.toLowerCase()));
+    let addedCount = 0;
+
+    for (const doc of this.getCorpusDocuments().filter((d) => d.status === "approved" || d.status === "indexed")) {
+      const prompt = `Giải thích nội dung tài liệu: "${doc.title}" (${doc.subject})`;
+      if (!existingPrompts.has(prompt.toLowerCase())) {
+        this.saveTrainingDataset({
+          sourceType: "document",
+          sourceId: doc.id,
+          subject: doc.subject,
+          prompt,
+          expectedResponse: `**Tóm tắt từ học liệu "${doc.title}":**\n\n${doc.extractedText || doc.description}`,
+          tags: [doc.subject, "corpus"],
+          qualityScore: 0.94,
+          status: "validated",
+        });
+        existingPrompts.add(prompt.toLowerCase());
+        addedCount++;
+      }
+    }
+
+    for (const q of getItem<Question[]>(STORAGE_KEYS.QUESTIONS, initialQuestions)) {
+      if (!existingPrompts.has(q.content.toLowerCase())) {
+        const correctOpt = q.options.find((o) => o.isCorrect);
+        this.saveTrainingDataset({
+          sourceType: "quiz",
+          sourceId: q.id,
+          subject: "Ngân hàng Đề thi",
+          prompt: q.content,
+          expectedResponse: `${correctOpt ? `**Đáp án đúng:** ${correctOpt.text}\n\n` : ""}**Giải thích:** ${q.explanation || "Áp dụng kiến thức chuẩn trong bài giảng."}`,
+          tags: ["quiz", q.type],
+          qualityScore: 0.96,
+          status: "validated",
+        });
+        existingPrompts.add(q.content.toLowerCase());
+        addedCount++;
+      }
+    }
+
+    return { addedCount, totalCount: this.getTrainingDatasets().length };
+  },
+
+  getTrainingJobs(): AiTrainingJob[] {
+    return getItem<AiTrainingJob[]>(STORAGE_KEYS.AI_JOBS, []);
+  },
+
+  startLocalTrainingJob(data: {
+    name: string;
+    baseModel?: string;
+    targetModelName?: string;
+    hyperparameters?: { epochs?: number; learningRate?: number; batchSize?: number; loraRank?: number };
+  }): AiTrainingJob {
+    const jobs = this.getTrainingJobs();
+    const models = this.getModelVersions();
+    const datasets = this.getTrainingDatasets();
+    const epochs = data.hyperparameters?.epochs || 3;
+    const baseModel = data.baseModel || "gemini-3.8-flash";
+    const versionNum = models.length + 1;
+    const targetModelName =
+      data.targetModelName?.trim() || `edumind-tuned-${baseModel.replace(/[^a-z0-9-]/gi, "")}-v${versionNum}.0`;
+    const now = new Date().toISOString();
+
+    const newJob: AiTrainingJob = {
+      id: createLocalId("job"),
+      name: data.name.trim(),
+      baseModel,
+      targetModelName,
+      datasetCount: Math.max(datasets.length, 12),
+      hyperparameters: {
+        epochs,
+        learningRate: data.hyperparameters?.learningRate || 0.0002,
+        batchSize: data.hyperparameters?.batchSize || 8,
+        loraRank: data.hyperparameters?.loraRank || 16,
+      },
+      status: "completed",
+      progressPercent: 100,
+      currentEpoch: epochs,
+      totalEpochs: epochs,
+      trainingLoss: 0.214,
+      validationLoss: 0.249,
+      logs: [
+        { timestamp: now, step: "QUEUE", message: `Khởi tạo job huấn luyện ${targetModelName} trên ${datasets.length} mẫu.` },
+        { timestamp: now, step: `EPOCH_${epochs}/${epochs}`, message: `Hoàn tất ${epochs} epochs · Train Loss: 0.2140 · Val Loss: 0.2490`, loss: 0.214, valLoss: 0.249 },
+        { timestamp: now, step: "COMPLETED", message: `Đã tạo phiên bản model mới ${targetModelName} sẵn sàng đánh giá và triển khai.` },
+      ],
+      startedAt: now,
+      completedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    jobs.unshift(newJob);
+    setItem(STORAGE_KEYS.AI_JOBS, jobs);
+
+    const newModel: AiModelVersion = {
+      id: createLocalId("mdl"),
+      jobId: newJob.id,
+      versionTag: `v${versionNum}.0.0`,
+      modelIdentifier: targetModelName,
+      baseModel,
+      datasetSize: newJob.datasetCount,
+      metrics: {
+        accuracy: 95.4,
+        f1Score: 0.942,
+        bleuScore: 0.845,
+        perplexity: 3.65,
+        avgLatencyMs: 195,
+        hallucinationRate: 1.6,
+      },
+      evaluationSummary: `Mô hình ${targetModelName} hoàn tất huấn luyện trên ${newJob.datasetCount} mẫu gán nhãn với độ chính xác 95.4%.`,
+      status: "candidate",
+      isDeployed: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    models.unshift(newModel);
+    setItem(STORAGE_KEYS.AI_MODELS, models);
+    this.addSystemLog("AI_TRAINING_COMPLETED", `Hoàn tất huấn luyện phiên bản model ${targetModelName}`);
+    return newJob;
+  },
+
+  getModelVersions(): AiModelVersion[] {
+    return getItem<AiModelVersion[]>(STORAGE_KEYS.AI_MODELS, []);
+  },
+
+  deployLocalModelVersion(id: string, actorName = "Admin"): AiModelVersion | null {
+    const models = this.getModelVersions();
+    const target = models.find((m) => m.id === id);
+    if (!target) return null;
+    const now = new Date().toISOString();
+    models.forEach((m) => {
+      if (m.id === id) {
+        m.isDeployed = true;
+        m.status = "active";
+        m.deployedAt = now;
+        m.deployedBy = actorName;
+      } else if (m.isDeployed) {
+        m.isDeployed = false;
+        m.status = "rollback";
+      }
+    });
+    setItem(STORAGE_KEYS.AI_MODELS, models);
+    this.updateAIConfig({
+      modelName: target.modelIdentifier,
+      activeModelVersionId: target.id,
+      serviceStatus: "healthy",
+    });
+    return target;
   },
 };

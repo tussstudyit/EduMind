@@ -1,0 +1,23 @@
+# Node and build output
+node_modules/
+.next/
+dist/
+coverage/
+
+# Uploaded binary media & course videos (>100MB GitHub limit)
+backend/uploads/
+uploads/
+*.mp4
+*.mkv
+*.mov
+*.avi
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Logs and editor files
+*.log
+.DS_Store
+.vscode/

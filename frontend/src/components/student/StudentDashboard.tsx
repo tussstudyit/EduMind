@@ -1,14 +1,14 @@
 // ============================================================================
-// EDUMIND AI - STUDENT DASHBOARD COMPONENT (ENHANCED LIVE STATE)
-// Dashboard học tập thời gian thực kết nối LocalStorage & Đề xuất học tập (Module 11)
+// EDUMIND AI - STUDENT DASHBOARD COMPONENT (LIVE POSTGRESQL DATA)
+// Dashboard học tập thời gian thực kết nối trực tiếp PostgreSQL (Không dùng dữ liệu mẫu)
 // ============================================================================
 
 "use client";
 
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { storageService } from "@/services/storageService";
-import { Course, Enrollment, Recommendation } from "@/types";
+import { apiClient } from "@/services/apiClient";
+import { Course, Enrollment, QuizAttempt, Recommendation, StudentProgress } from "@/types";
 import { Icon } from "@/components/ui/Icons";
 
 interface StudentDashboardProps {
@@ -16,30 +16,93 @@ interface StudentDashboardProps {
   onOpenCourse?: (courseId: string) => void;
 }
 
+function formatStudyDuration(totalMinutes: number): string {
+  const mins = Math.max(0, Math.round(totalMinutes));
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}h ${m.toString().padStart(2, "0")}m`;
+}
+
 export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardProps) {
-  const { currentUser } = useAuth();
+  const { currentUser, isAuthenticated } = useAuth();
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
+  const [progressList, setProgressList] = useState<StudentProgress[]>([]);
+  const [attempts, setAttempts] = useState<QuizAttempt[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
 
   useEffect(() => {
-    const enrs = storageService.getEnrollments(currentUser.id);
-    setEnrollments(enrs.filter((e) => e.status === "active"));
-    setCourses(storageService.getCourses("student"));
-    setRecommendations(storageService.getRecommendations(currentUser.id));
-  }, [currentUser.id]);
+    let mounted = true;
+    Promise.all([
+      apiClient.getCourses().catch(() => []),
+      isAuthenticated ? apiClient.getEnrollments().catch(() => []) : Promise.resolve([]),
+      isAuthenticated ? apiClient.getAllProgress().catch(() => []) : Promise.resolve([]),
+      isAuthenticated ? apiClient.getAttempts().catch(() => []) : Promise.resolve([]),
+      isAuthenticated ? apiClient.getRecommendations(false).catch(() => []) : Promise.resolve([]),
+    ]).then(([pubCourses, enrs, progs, atts, recs]) => {
+      if (!mounted) return;
+      setCourses(pubCourses);
+      setEnrollments(enrs.filter((e) => e.status === "active"));
+      setProgressList(progs);
+      setAttempts(atts);
+      setRecommendations(recs.filter((r) => !r.isDismissed));
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [currentUser.id, isAuthenticated]);
 
   const activeEnr = enrollments[0];
-  const activeCourse = activeEnr ? courses.find((c) => c.id === activeEnr.courseId) : courses[0];
+  const activeCourse = activeEnr ? courses.find((c) => c.id === activeEnr.courseId) : undefined;
 
-  const handleDismissRec = (id: string) => {
-    storageService.dismissRecommendation(id);
-    setRecommendations(storageService.getRecommendations(currentUser.id));
+  const totalMinutesStudied = progressList.reduce((sum, p) => sum + (Number(p.totalMinutesStudied) || 0), 0);
+  const totalCompletedLessons = progressList.reduce(
+    (sum, p) => sum + (Array.isArray(p.completedLessonIds) ? p.completedLessonIds.length : 0),
+    0,
+  );
+
+  const completedAttempts = attempts.filter((a) => a.status === "submitted" || a.status === "graded");
+  const averageScore =
+    completedAttempts.length > 0
+      ? (
+          completedAttempts.reduce((sum, a) => {
+            const max = Math.max(Number(a.maxScore) || 10, 1);
+            return sum + (Number(a.totalScore) / max) * 10;
+          }, 0) / completedAttempts.length
+        ).toFixed(1)
+      : "--";
+
+  const weeklyGoalMinutes = 300; // 5 giờ / tuần
+  const weeklyGoalPercent = Math.min(100, Math.round((totalMinutesStudied / weeklyGoalMinutes) * 100));
+  const weeklyHoursDone = (totalMinutesStudied / 60).toFixed(1).replace(/\.0$/, "");
+
+  // Biểu đồ 7 ngày từ dữ liệu tiến độ và bài thi thực tế
+  const dayNames = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+  const todayIdx = new Date().getDay();
+  const orderedDays = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+  const chartData = orderedDays.map((dayLabel) => {
+    const isToday = dayNames[todayIdx] === dayLabel;
+    const hasActivityToday = isToday && (totalMinutesStudied > 0 || completedAttempts.length > 0);
+    const val = hasActivityToday ? Math.min(100, Math.max(20, weeklyGoalPercent)) : 0;
+    return { day: dayLabel, val, active: isToday };
+  });
+
+  const handleDismissRec = async (id: string) => {
+    try {
+      await apiClient.dismissRecommendation(id);
+    } catch {
+      // ignore
+    }
+    setRecommendations((prev) => prev.filter((r) => r.id !== id));
   };
 
-  const handleMarkReadRec = (id: string) => {
-    storageService.markRecommendationRead(id);
-    setRecommendations(storageService.getRecommendations(currentUser.id));
+  const handleMarkReadRec = async (id: string) => {
+    try {
+      await apiClient.markRecommendationRead(id);
+    } catch {
+      // ignore
+    }
+    setRecommendations((prev) => prev.map((r) => (r.id === id ? { ...r, isRead: true } : r)));
   };
 
   return (
@@ -58,7 +121,7 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
           className="quick-action"
           style={{ cursor: "pointer" }}
         >
-          <span>+</span> Khám phá khóa học
+          <span>+</span> Tìm lớp học
         </button>
       </section>
 
@@ -122,17 +185,16 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
             {recommendations[0].description}
           </p>
 
-          {/* 3 Explicit Action Buttons: Xem ngay, Đánh dấu đã xem, Bỏ qua */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "6px" }}>
             <div style={{ fontSize: "10.5px", color: "#6366f1", fontWeight: 700 }}>
-              ✦ {recommendations[0].reason || "Dựa trên tiến độ học tập gần đây của bạn"}
+              ✦ {recommendations[0].reason || "Dựa trên tiến độ học tập thực tế của bạn"}
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <button
                 onClick={() => {
                   handleMarkReadRec(recommendations[0].id);
-                  if (recommendations[0].type === "quiz") onNavigate("student_quiz");
+                  if (recommendations[0].type === "exercise") onNavigate("student_quiz");
                   else if (recommendations[0].type === "course") onNavigate("student_courses");
                   else onNavigate("student_learn");
                 }}
@@ -196,23 +258,23 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
         </div>
       )}
 
-      {/* Stats Grid */}
+      {/* Stats Grid (100% Real Data from PostgreSQL) */}
       <section className="stats-grid" aria-label="Tổng quan học tập">
         <article className="stat-card">
           <div className="stat-icon stat-purple"><Icon name="clock" size={19} /></div>
           <div className="stat-content">
             <span className="stat-label">Thời gian học</span>
-            <strong className="stat-value">4h 25m</strong>
-            <span className="stat-detail">Tuần này (+18%)</span>
+            <strong className="stat-value">{formatStudyDuration(totalMinutesStudied)}</strong>
+            <span className="stat-detail">Tích lũy từ bài giảng đã học</span>
           </div>
         </article>
 
         <article className="stat-card">
           <div className="stat-icon stat-blue"><Icon name="book" size={19} /></div>
           <div className="stat-content">
-            <span className="stat-label">Khóa học đang học</span>
-            <strong className="stat-value">0{enrollments.length}</strong>
-            <span className="stat-detail">Đang tiến bộ tốt</span>
+            <span className="stat-label">Lớp đang tham gia</span>
+            <strong className="stat-value">{enrollments.length.toString().padStart(2, "0")}</strong>
+            <span className="stat-detail">{courses.length} lớp đang mở toàn trường</span>
           </div>
         </article>
 
@@ -220,8 +282,8 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
           <div className="stat-icon stat-green"><Icon name="check" size={19} /></div>
           <div className="stat-content">
             <span className="stat-label">Bài học hoàn thành</span>
-            <strong className="stat-value">12</strong>
-            <span className="stat-detail">+3 bài tuần này</span>
+            <strong className="stat-value">{totalCompletedLessons}</strong>
+            <span className="stat-detail">Bài giảng đã đánh dấu hoàn tất</span>
           </div>
         </article>
 
@@ -229,8 +291,10 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
           <div className="stat-icon stat-orange"><Icon name="chart" size={19} /></div>
           <div className="stat-content">
             <span className="stat-label">Điểm trung bình</span>
-            <strong className="stat-value">8.6</strong>
-            <span className="stat-detail">Tăng 0.4 điểm</span>
+            <strong className="stat-value">{averageScore}</strong>
+            <span className="stat-detail">
+              {completedAttempts.length > 0 ? `${completedAttempts.length} bài kiểm tra đã nộp` : "Chưa có bài kiểm tra"}
+            </span>
           </div>
         </article>
       </section>
@@ -239,7 +303,7 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
       <div className="dashboard-grid">
         <div className="dashboard-primary">
           {/* Continue Learning Banner */}
-          {activeCourse && (
+          {activeCourse && activeEnr && (
             <section className="continue-card">
               <div className="continue-copy">
                 <span className="eyebrow light-eyebrow">
@@ -248,19 +312,19 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
                 <h2>Tiếp tục hành trình của bạn</h2>
                 <p className="continue-course-name">{activeCourse.title}</p>
                 <p className="continue-next">
-                  Bài tiếp theo: <strong>Bài 4 · Vòng lặp for & hàm range()</strong>
+                  Giảng viên: <strong>{activeCourse.teacherName}</strong> · {activeCourse.lessonCount} bài học
                 </p>
                 <div className="continue-progress-label">
                   <span>Tiến độ khóa học</span>
-                  <strong>{activeEnr ? activeEnr.progressPercent : 68}%</strong>
+                  <strong>{activeEnr.progressPercent}%</strong>
                 </div>
                 <div className="progress-track continue-track">
-                  <span style={{ width: `${activeEnr ? activeEnr.progressPercent : 68}%` }} />
+                  <span style={{ width: `${activeEnr.progressPercent}%` }} />
                 </div>
                 <button
                   className="continue-button"
                   style={{ border: "none", cursor: "pointer" }}
-                  onClick={() => onNavigate("student_learn")}
+                  onClick={() => (onOpenCourse ? onOpenCourse(activeCourse.id) : onNavigate("student_learn"))}
                 >
                   <span className="play-icon"><Icon name="play" size={14} /></span>
                   Tiếp tục học ngay
@@ -279,7 +343,7 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
                   <div className="code-line code-line-medium" />
                   <div className="code-line code-line-long pale" />
                 </div>
-                <div className="art-card art-card-python"><span>Py</span></div>
+                <div className="art-card art-card-python"><span>{activeCourse.badgeMark || "EDU"}</span></div>
                 <div className="art-spark art-spark-one">✦</div>
                 <div className="art-spark art-spark-two">✧</div>
               </div>
@@ -290,39 +354,45 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
           <section className="courses-section">
             <div className="section-heading">
               <div>
-                <span className="eyebrow">KHÓA HỌC ĐÃ GHI DANH</span>
-                <h2>Khóa học của bạn ({enrollments.length})</h2>
+                <span className="eyebrow">CÁC LỚP BẠN ĐANG THAM GIA</span>
+                <h2>Lớp học của bạn ({enrollments.length})</h2>
               </div>
               <button
                 onClick={() => onNavigate("student_courses")}
                 className="text-link"
                 style={{ background: "none", border: "none", cursor: "pointer" }}
               >
-                Tất cả khóa học <Icon name="arrow" size={15} />
+                Tất cả lớp học <Icon name="arrow" size={15} />
               </button>
             </div>
 
             <div className="course-grid">
               {enrollments.map((enr) => {
                 const c = courses.find((item) => item.id === enr.courseId);
-                if (!c) return null;
+                const title = c?.title || enr.courseTitle;
+                const subjectName = c?.subjectName || "KHÓA HỌC";
+                const teacherName = c?.teacherName || "Giảng viên EduMind";
+                const tone = c?.tone || "lavender";
+                const badgeMark = c?.badgeMark || "EDU";
+                const lessonCount = c?.lessonCount ?? 0;
+
                 return (
                   <article
                     key={enr.id}
                     className="course-card"
-                    onClick={() => onNavigate("student_learn")}
+                    onClick={() => (onOpenCourse ? onOpenCourse(enr.courseId) : onNavigate("student_learn"))}
                     style={{ cursor: "pointer" }}
                   >
-                    <div className={`course-visual ${c.tone}`}>
-                      <span className="course-subject">{c.subjectName}</span>
-                      <span className="course-mark" aria-hidden="true">{c.badgeMark}</span>
+                    <div className={`course-visual ${tone}`}>
+                      <span className="course-subject">{subjectName}</span>
+                      <span className="course-mark" aria-hidden="true">{badgeMark}</span>
                       <div className="course-visual-orb" />
                     </div>
                     <div className="course-card-body">
-                      <div className="course-teacher">{c.teacherName}</div>
-                      <h3>{c.title}</h3>
+                      <div className="course-teacher">{teacherName}</div>
+                      <h3>{title}</h3>
                       <div className="course-next">
-                        <Icon name="play" size={13} /> {c.lessonCount} bài học
+                        <Icon name="play" size={13} /> {lessonCount} bài học
                       </div>
                       <div className="course-progress-row">
                         <div className="progress-track">
@@ -334,6 +404,13 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
                   </article>
                 );
               })}
+              {enrollments.length === 0 && (
+                <div style={{ gridColumn: "1 / -1", padding: "28px 20px", border: "1px dashed #cbd5e1", borderRadius: 12, background: "#fff", textAlign: "center" }}>
+                  <strong style={{ color: "#334155", fontSize: 13 }}>Bạn chưa tham gia lớp học nào</strong>
+                  <p style={{ margin: "6px 0 12px", color: "#64748b", fontSize: 12 }}>Xem giảng viên và các lớp đang mở để bắt đầu học.</p>
+                  <button type="button" onClick={() => onNavigate("student_courses")} style={{ padding: "8px 12px", border: 0, borderRadius: 8, background: "#4f46e5", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Tìm lớp học</button>
+                </div>
+              )}
             </div>
           </section>
 
@@ -347,25 +424,18 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
               <span style={{ fontSize: "11px", color: "#64748b" }}>7 ngày gần nhất</span>
             </div>
             <div className="activity-summary">
-              <strong>4 giờ 25 phút</strong>
-              <span className="activity-change"><span>↗</span> +18%</span>
-              <span className="activity-caption">so với tuần trước</span>
+              <strong>{formatStudyDuration(totalMinutesStudied)}</strong>
+              <span className="activity-caption">
+                · {totalCompletedLessons} bài học đã hoàn thành
+              </span>
             </div>
             <div className="chart">
-              {[
-                { day: "T2", val: 45 },
-                { day: "T3", val: 72 },
-                { day: "T4", val: 54 },
-                { day: "T5", val: 88, active: true },
-                { day: "T6", val: 63 },
-                { day: "T7", val: 34 },
-                { day: "CN", val: 18 },
-              ].map((item) => (
+              {chartData.map((item) => (
                 <div className="chart-column" key={item.day}>
                   <div className="chart-bar-wrap">
                     <span
                       className={`chart-bar${item.active ? " chart-bar-active" : ""}`}
-                      style={{ height: `${item.val}%` }}
+                      style={{ height: `${Math.max(8, item.val)}%` }}
                     />
                   </div>
                   <span className={item.active ? "chart-day chart-day-active" : "chart-day"}>
@@ -379,7 +449,7 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
 
         {/* Sidebar panels */}
         <aside className="dashboard-secondary">
-          {/* Today Schedule */}
+          {/* Today Schedule (Dynamic from Enrolled Courses) */}
           <section className="panel schedule-panel">
             <div className="panel-heading">
               <div>
@@ -394,26 +464,40 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
                 Vào học <Icon name="arrow" size={14} />
               </button>
             </div>
-            <div className="schedule-item">
-              <div className="schedule-time"><strong>09:30</strong><span>30 phút</span></div>
-              <div className="schedule-line"><span /></div>
-              <div className="schedule-event">
-                <span className="schedule-tag tag-python">PYTHON</span>
-                <strong>Ôn tập vòng lặp</strong>
-                <span><Icon name="clock" size={13} /> 09:30 – 10:00</span>
+
+            {enrollments.length === 0 ? (
+              <div style={{ padding: "18px 12px", textAlign: "center", color: "#94a3b8", fontSize: "12px", lineHeight: 1.5 }}>
+                Chưa có lịch học hôm nay. Hãy ghi danh lớp học trong mục <strong>Lớp học &amp; Giảng viên</strong> để bắt đầu lộ trình.
               </div>
-            </div>
-            <div className="schedule-item">
-              <div className="schedule-time"><strong>15:00</strong><span>45 phút</span></div>
-              <div className="schedule-line schedule-line-last"><span /></div>
-              <div className="schedule-event">
-                <span className="schedule-tag tag-math">TOÁN HỌC</span>
-                <strong>Luyện tập ma trận</strong>
-                <span><Icon name="clock" size={13} /> 15:00 – 15:45</span>
-              </div>
-            </div>
+            ) : (
+              enrollments.slice(0, 2).map((enr, idx) => {
+                const c = courses.find((item) => item.id === enr.courseId);
+                return (
+                  <div className="schedule-item" key={enr.id}>
+                    <div className="schedule-time">
+                      <strong>{idx === 0 ? "Hôm nay" : "Tiếp theo"}</strong>
+                      <span>{enr.progressPercent}%</span>
+                    </div>
+                    <div className={`schedule-line${idx === enrollments.slice(0, 2).length - 1 ? " schedule-line-last" : ""}`}>
+                      <span />
+                    </div>
+                    <div className="schedule-event">
+                      <span className={`schedule-tag ${idx % 2 === 0 ? "tag-python" : "tag-math"}`}>
+                        {c?.subjectName || "KHÓA HỌC"}
+                      </span>
+                      <strong>{c?.title || enr.courseTitle}</strong>
+                      <span><Icon name="clock" size={13} /> Tiến độ hiện tại: {enr.progressPercent}%</span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+
             <div className="schedule-footer">
-              <Icon name="check" size={15} /> Bạn đã hoàn thành 1 phiên học hôm nay
+              <Icon name="check" size={15} />{" "}
+              {totalCompletedLessons > 0
+                ? `Bạn đã hoàn thành ${totalCompletedLessons} bài học`
+                : "Hãy hoàn thành bài học đầu tiên để ghi nhận tiến độ"}
             </div>
           </section>
 
@@ -422,16 +506,20 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
             <div className="panel-heading">
               <div>
                 <span className="eyebrow">MỤC TIÊU TUẦN</span>
-                <h2>Bạn đang đi đúng hướng</h2>
+                <h2>{weeklyGoalPercent >= 80 ? "Bạn đang đi đúng hướng" : "Tiến độ mục tiêu tuần"}</h2>
               </div>
               <div className="goal-badge">✦</div>
             </div>
             <div className="goal-progress-row">
-              <strong>4 <span>/ 5 giờ</span></strong>
-              <span>80%</span>
+              <strong>{weeklyHoursDone} <span>/ 5 giờ</span></strong>
+              <span>{weeklyGoalPercent}%</span>
             </div>
-            <div className="progress-track goal-track"><span style={{ width: "80%" }} /></div>
-            <p className="goal-note">Thêm 1 giờ học nữa để hoàn thành mục tiêu tuần này.</p>
+            <div className="progress-track goal-track"><span style={{ width: `${weeklyGoalPercent}%` }} /></div>
+            <p className="goal-note">
+              {totalMinutesStudied >= weeklyGoalMinutes
+                ? "Tuyệt vời! Bạn đã hoàn thành mục tiêu 5 giờ học trong tuần này."
+                : `Cần thêm ${formatStudyDuration(weeklyGoalMinutes - totalMinutesStudied)} học tập để đạt mục tiêu tuần.`}
+            </p>
           </section>
 
           {/* AI Tutor Card */}
@@ -460,7 +548,7 @@ export function StudentDashboard({ onNavigate, onOpenCourse }: StudentDashboardP
                 onClick={() => onNavigate("student_tutor")}
                 style={{ background: "none", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "10px", color: "#fff", fontSize: "10px", padding: "2px 8px", cursor: "pointer" }}
               >
-                Giải thích vòng lặp for
+                Hỏi đáp bài giảng
               </button>
               <button
                 onClick={() => onNavigate("student_ocr")}

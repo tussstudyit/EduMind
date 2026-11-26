@@ -1,0 +1,101 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edumind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edumind_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-edumind}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - edumind-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      FRONTEND_ORIGIN: http://localhost:3000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${POSTGRES_USER:-edumind}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-edumind_dev_password}
+      DB_DATABASE: ${POSTGRES_DB:-edumind}
+      DB_SSL: "false"
+      JWT_SECRET: ${JWT_SECRET:-edumind-local-development-secret-change-me-2026}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30d}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-EduMind Administrator}
+      N8N_PASSWORD_RESET_WEBHOOK_URL: http://n8n:5678/webhook/edumind-password-reset
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:-}
+    expose:
+      - "3001"
+    volumes:
+      - edumind-course-uploads:/app/uploads/course
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        API_INTERNAL_URL: http://backend:3001/api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend-mobile:
+    build:
+      context: ./frontend-mobile
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        API_INTERNAL_URL: http://backend:3001/api
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  n8n:
+    image: n8nio/n8n:2.47.4
+    restart: unless-stopped
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: http://localhost:5678/
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_SECURE_COOKIE: "false"
+      GENERIC_TIMEZONE: Asia/Bangkok
+      TZ: Asia/Bangkok
+    ports:
+      - "5678:5678"
+    volumes:
+      - edumind-n8n:/home/node/.n8n
+
+volumes:
+  edumind-postgres:
+  edumind-n8n:
+  edumind-course-uploads:

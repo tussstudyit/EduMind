@@ -45,35 +45,35 @@ export function Modal({
     <div
       role="dialog"
       aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9000,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "16px",
-        background: "rgba(15, 23, 42, 0.6)",
-        backdropFilter: "blur(4px)",
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
         style={{
-          width: "100%",
-          maxWidth,
-          maxHeight: "90vh",
+          position: "fixed",
+          inset: 0,
+          zIndex: 9000,
           display: "flex",
-          flexDirection: "column",
-          borderRadius: "14px",
-          background: "#ffffff",
-          boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
-          overflow: "hidden",
-          animation: "modalZoom 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom))",
+          background: "rgba(15, 23, 42, 0.6)",
+          backdropFilter: "blur(4px)",
+        }}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
         }}
       >
+        <div
+          style={{
+            width: "100%",
+            maxWidth,
+            maxHeight: "calc(100dvh - 28px - env(safe-area-inset-top) - env(safe-area-inset-bottom))",
+            display: "flex",
+            flexDirection: "column",
+            borderRadius: "14px",
+            background: "#ffffff",
+            boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+            overflow: "hidden",
+            animation: "modalZoom 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+          }}
+        >
         {/* Modal Header */}
         <div
           style={{
