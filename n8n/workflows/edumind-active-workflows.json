@@ -1,0 +1,34 @@
+﻿{
+    "workflows":  [
+                      {
+                          "active":  true,
+                          "name":  "EduMind - Send password reset email",
+                          "id":  "PYFWYNkJTFtOlk3W",
+                          "webhookPath":  "/webhook/edumind-password-reset"
+                      },
+                      {
+                          "active":  true,
+                          "name":  "EduMind - Course Violation Report \u0026 Admin Moderation",
+                          "id":  "3HASCEVukXQbRRJb",
+                          "webhookPath":  "/webhook/edumind-course-report"
+                      },
+                      {
+                          "active":  true,
+                          "name":  "EduMind - Quiz \u0026 Essay Grading Notification",
+                          "id":  "PNHcSog3wSdHQQO2",
+                          "webhookPath":  "/webhook/edumind-grading-notify"
+                      },
+                      {
+                          "active":  true,
+                          "name":  "EduMind - Teacher Study Progress Reminder Email",
+                          "id":  "HyckcD3cJFZ1Ytt2",
+                          "webhookPath":  "/webhook/edumind-progress-reminder"
+                      },
+                      {
+                          "active":  true,
+                          "name":  "EduMind - Teacher Star Rating Aggregation",
+                          "id":  "TS6tqBimNwFviVc6",
+                          "webhookPath":  "/webhook/edumind-teacher-rating"
+                      }
+                  ]
+}
